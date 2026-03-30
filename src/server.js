@@ -1,43 +1,72 @@
-const express = require('express');
-const cookies = require('cookie-parser');
-const cors = require('cors');
-require('dotenv').config();
-const redisClient = require('./config/redis');
-const faceRoutes = require('./routes/face.routes');
+const env = require('./config/env');
+const { connectDatabase } = require('./config/database');
+const { connectRedis, redisClient } = require('./config/redis');
+const app = require('./app');
+const { registerFaceEnrollmentWorker } = require('./queues/workers/faceEnrollment.worker');
 
+let server;
 
-const app = express();
+async function startServer() {
+  const connectionResults = await Promise.allSettled([connectDatabase(), connectRedis()]);
 
+  if (connectionResults[0].status === 'fulfilled') {
+    console.log('[bootstrap] Connected to PostgreSQL');
+  } else {
+    console.error('[bootstrap] PostgreSQL connection failed:', connectionResults[0].reason.message);
+  }
 
-app.use(cookies());
-app.use(express.json());
-const allowedOrigins = [process.env.ADMIN_WEB_URL, process.env.SUPERADMIN_WEB_URL];
-app.use(cors({
-    origin: function (origin, callback) {
-        // allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) === -1) {
-            const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-            return callback(new Error(msg), false);
-        }
-        return callback(null, true);
-    },
-    credentials: true,
-}));
+  if (connectionResults[1].status === 'fulfilled') {
+    console.log('[bootstrap] Connected to Redis');
+  } else {
+    console.error('[bootstrap] Redis connection failed:', connectionResults[1].reason.message);
+  }
 
+  if (env.nodeEnv === 'production' && connectionResults.some((result) => result.status === 'rejected')) {
+    throw new Error('Failed to connect to required external services');
+  }
 
+  registerFaceEnrollmentWorker();
 
-app.use('/api/face', faceRoutes);
+  server = app.listen(env.port, () => {
+    console.log(`[bootstrap] Server listening on port ${env.port}`);
+  });
 
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[bootstrap] Port ${env.port} is already in use`);
+      process.exit(1);
+    }
 
-const startServer = () => {
-
-    redisClient.connect()
-    console.log('Connected to Redis');
-
-  app.listen(process.env.PORT, () => {
-    console.log(`Server is running on port ${process.env.PORT}`);
+    console.error('[bootstrap] Server error:', error);
+    process.exit(1);
   });
 }
 
-startServer();
+async function shutdown(signal) {
+  console.log(`[bootstrap] Received ${signal}, shutting down...`);
+
+  if (!server) {
+    process.exit(0);
+  }
+
+  server.close(async () => {
+    try {
+      if (redisClient.status === 'ready' || redisClient.status === 'connect') {
+        await redisClient.quit();
+        console.log('[bootstrap] Redis connection closed');
+      }
+    } catch (error) {
+      console.error('[bootstrap] Failed to close Redis cleanly:', error.message);
+    }
+
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+startServer().catch((error) => {
+  console.error('[bootstrap] Startup failed:', error);
+  process.exit(1);
+});

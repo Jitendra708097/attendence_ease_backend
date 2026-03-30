@@ -1,0 +1,64 @@
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const env = require('./config/env');
+const authRoutes = require('./modules/auth/auth.routes');
+const attendanceRoutes = require('./modules/attendance/attendance.routes');
+const branchRoutes = require('./modules/branch/branch.routes');
+const employeeRoutes = require('./modules/employee/employee.routes');
+const faceRoutes = require('./modules/face/face.routes');
+const shiftRoutes = require('./modules/shift/shift.routes');
+const requestId = require('./middleware/requestId');
+const notFound = require('./middleware/notFound');
+const errorHandler = require('./middleware/errorHandler');
+
+const app = express();
+
+const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl].filter(Boolean);
+
+morgan.token('request-id', (req) => req.id || '-');
+
+app.use(requestId);
+app.use(helmet());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(Object.assign(new Error('Origin not allowed by CORS'), { statusCode: 403, code: 'HTTP_403' }));
+    },
+    credentials: true,
+  })
+);
+app.use(express.json());
+app.use(
+  morgan(':method :url :status :response-time ms - :res[content-length] req_id=:request-id', {
+    stream: {
+      write(message) {
+        process.stdout.write(message);
+      },
+    },
+  })
+);
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/attendance', attendanceRoutes);
+app.use('/api/v1/branches', branchRoutes);
+app.use('/api/v1/employees', employeeRoutes);
+app.use('/api/v1/face', faceRoutes);
+app.use('/api/v1/shifts', shiftRoutes);
+
+app.use(notFound);
+app.use(errorHandler);
+
+module.exports = app;

@@ -23,6 +23,8 @@ const COLLECTION_ID = process.env.AWS_REKOGNITION_COLLECTION_ID;
 
   const response = await rekognitionClient.send(command);
 
+  // console.log("Index Faces Response:", response.FaceRecords,response.FaceDetail);
+
   if (response.FaceRecords.length === 0) {
     throw new Error("No face detected in the image. Please use a clear photo.");
   }
@@ -49,7 +51,8 @@ const searchFace = async (imageBuffer) => {
   });
 
   const response = await rekognitionClient.send(command);
-
+console.log("Search Faces Response:", response.FaceMatches);
+console.log("Search Faces Response:", response);
   if (response.FaceMatches.length === 0) {
     return {
       matched: false,
