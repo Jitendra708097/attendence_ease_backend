@@ -166,16 +166,18 @@ async function createEmployee(orgId, organisation, payload) {
   });
 
   await notification.add(
-    'send_welcome_sms',
+    'send_welcome_email',
     {
       orgId,
       employeeId: employee.id,
       email: employee.email,
       phone: employee.phone,
+      organisationName: organisation.name,
+      employeeName: employee.name,
       tempPassword,
     },
     {
-      jobId: `send_welcome_sms_${employee.id}`,
+      jobId: `send_welcome_email_${employee.id}`,
       removeOnComplete: true,
     }
   );

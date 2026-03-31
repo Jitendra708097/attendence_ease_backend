@@ -28,7 +28,7 @@ async function createEmployee(req, res) {
   try {
     const organisation = await Organisation.findOne({
       where: { id: req.org_id },
-      attributes: ['id', 'slug'],
+      attributes: ['id', 'slug', 'name'],
     });
     const data = await employeeService.createEmployee(req.org_id, organisation, req.body);
     await log(req.employee, 'employee.create', { type: 'employee', id: data.id }, null, data, req);
@@ -72,7 +72,7 @@ async function bulkUpload(req, res) {
   try {
     const organisation = await Organisation.findOne({
       where: { id: req.org_id },
-      attributes: ['id', 'slug'],
+      attributes: ['id', 'slug', 'name'],
     });
     const data = await employeeService.bulkUpload(req.org_id, organisation, req.file.buffer);
     await log(req.employee, 'employee.bulk_upload', { type: 'employee_bulk_upload', id: req.employee.id }, null, { count: data.length }, req);

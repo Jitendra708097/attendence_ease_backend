@@ -101,6 +101,13 @@ const env = {
     adminUrl: readEnv('FRONTEND_ADMIN_URL', readEnv('ADMIN_WEB_URL')),
     superadminUrl: readEnv('FRONTEND_SUPERADMIN_URL', readEnv('SUPERADMIN_WEB_URL')),
   },
+  smtp: {
+    host: readEnv('SMTP_HOST', ''),
+    port: parseNumber(readEnv('SMTP_PORT', 587), 587),
+    user: readEnv('SMTP_USER', ''),
+    pass: readEnv('SMTP_PASS', ''),
+    from: readEnv('EMAIL_FROM', readEnv('SMTP_USER', '')),
+  },
 };
 
 module.exports = env;

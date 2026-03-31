@@ -16,10 +16,8 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       branch_id: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.UUID,
+        allowNull: false,
       },
       date: {
         type: DataTypes.DATEONLY,
@@ -52,10 +50,8 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: false,
       },
       overtime_minutes: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return 0;
-        },
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
       },
       is_finalised: {
         type: DataTypes.BOOLEAN,

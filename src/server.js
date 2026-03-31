@@ -2,7 +2,7 @@ const env = require('./config/env');
 const { connectDatabase } = require('./config/database');
 const { connectRedis, redisClient } = require('./config/redis');
 const app = require('./app');
-const { registerFaceEnrollmentWorker } = require('./queues/workers/faceEnrollment.worker');
+const { registerQueues } = require('./queues/bootstrap');
 
 let server;
 
@@ -25,7 +25,7 @@ async function startServer() {
     throw new Error('Failed to connect to required external services');
   }
 
-  registerFaceEnrollmentWorker();
+  registerQueues();
 
   server = app.listen(env.port, () => {
     console.log(`[bootstrap] Server listening on port ${env.port}`);

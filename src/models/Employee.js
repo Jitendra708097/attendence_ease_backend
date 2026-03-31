@@ -1,21 +1,4 @@
 module.exports = (sequelize, DataTypes) => {
-  function splitFullName(value) {
-    const safeValue = String(value || '').trim();
-
-    if (!safeValue) {
-      return {
-        firstName: '',
-        lastName: '',
-      };
-    }
-
-    const parts = safeValue.split(/\s+/);
-    return {
-      firstName: parts[0],
-      lastName: parts.slice(1).join(' '),
-    };
-  }
-
   const Employee = sequelize.define(
     'Employee',
     {
@@ -37,32 +20,13 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.UUID,
         allowNull: false,
       },
-      first_name: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      last_name: {
+      emp_code: {
         type: DataTypes.STRING,
         allowNull: true,
       },
-      emp_code: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
-      },
       name: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          const firstName = this.getDataValue('first_name') || '';
-          const lastName = this.getDataValue('last_name') || '';
-          return `${firstName} ${lastName}`.trim();
-        },
-        set(value) {
-          const { firstName, lastName } = splitFullName(value);
-          this.setDataValue('first_name', firstName);
-          this.setDataValue('last_name', lastName);
-        },
+        type: DataTypes.STRING,
+        allowNull: false,
       },
       email: {
         type: DataTypes.STRING,
@@ -79,24 +43,15 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: null,
       },
       face_embedding_id: DataTypes.STRING,
-      face_enrolled_at: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
-      },
+      face_enrolled_at: DataTypes.DATE,
       registered_device_id: DataTypes.STRING,
       trust_score: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return 'probationary';
-        },
+        type: DataTypes.ENUM('probationary', 'default', 'trusted', 'flagged'),
+        defaultValue: 'probationary',
       },
       checkin_count: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return 0;
-        },
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
       },
       leave_balance: {
         type: DataTypes.JSONB,
@@ -106,17 +61,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
-      temp_password: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
-      },
+      temp_password: DataTypes.STRING,
       password_changed: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return true;
-        },
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
       },
     },
     {

@@ -102,7 +102,48 @@ async function manual(req, res) {
 }
 
 async function live(req, res) {
-  return ok(res, [], 'Live attendance feed placeholder');
+  try {
+    const data = await attendanceService.getLiveBoard(req.org_id, req.query);
+    return ok(res, data, 'Live attendance feed fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function statsToday(req, res) {
+  try {
+    const data = await attendanceService.getTodayStats(req.org_id);
+    return ok(res, data, 'Attendance stats fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function trend(req, res) {
+  try {
+    const data = await attendanceService.getTrendStats(req.org_id, req.query);
+    return ok(res, data, 'Attendance trend fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function topLate(req, res) {
+  try {
+    const data = await attendanceService.getTopLateEmployees(req.org_id, req.query);
+    return ok(res, data, 'Top late employees fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function activity(req, res) {
+  try {
+    const data = await attendanceService.getRecentActivity(req.org_id, req.query);
+    return ok(res, data, 'Recent activity fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
 }
 
 module.exports = {
@@ -116,4 +157,8 @@ module.exports = {
   getById,
   manual,
   live,
+  statsToday,
+  trend,
+  topLate,
+  activity,
 };

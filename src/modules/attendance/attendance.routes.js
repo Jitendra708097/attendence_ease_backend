@@ -16,6 +16,10 @@ router.post('/undo-checkout', asyncHandler(attendanceController.undoCheckout));
 router.get('/today', asyncHandler(attendanceController.today));
 router.get('/history', asyncHandler(attendanceController.history));
 
+router.get('/stats/today', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.statsToday));
+router.get('/stats/trend', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.trend));
+router.get('/stats/top-late', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.topLate));
+router.get('/stats/activity', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.activity));
 router.get('/live', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.live));
 router.get('/', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.list));
 router.get('/:id', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.getById));

@@ -1,5 +1,16 @@
 const { Op } = require('sequelize');
-const { Attendance, AttendanceSession, Branch, DeviceException, Employee, Shift } = require('../../models');
+const {
+  Attendance,
+  AttendanceSession,
+  AuditLog,
+  Branch,
+  DeviceException,
+  DeviceToken,
+  Employee,
+  LeaveRequest,
+  Regularisation,
+  Shift,
+} = require('../../models');
 const { redisClient } = require('../../config/redis');
 const { checkoutGrace } = require('../../queues');
 const { log } = require('../../utils/auditLog');
@@ -26,6 +37,39 @@ function getCooldownKey(orgId, empId) {
 
 function getUndoKey(orgId, empId, sessionId) {
   return `attendance_undo:${orgId}:${empId}:${sessionId}`;
+}
+
+function getLiveFeedKey(orgId) {
+  return `attendance_live_feed:${orgId}`;
+}
+
+async function pushLiveFeedEvent(orgId, payload) {
+  try {
+    await redisClient.lpush(getLiveFeedKey(orgId), JSON.stringify(payload));
+    await redisClient.ltrim(getLiveFeedKey(orgId), 0, 49);
+    await redisClient.expire(getLiveFeedKey(orgId), 7 * 24 * 60 * 60);
+  } catch (error) {
+    return null;
+  }
+
+  return true;
+}
+
+async function readLiveFeedEvents(orgId, limit = 20) {
+  try {
+    const rows = await redisClient.lrange(getLiveFeedKey(orgId), 0, Math.max(0, limit - 1));
+    return rows
+      .map((row) => {
+        try {
+          return JSON.parse(row);
+        } catch (error) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    return [];
+  }
 }
 
 async function getEmployeeContext(orgId, empId) {
@@ -223,6 +267,7 @@ async function checkIn({ orgId, empId, body, req }) {
   const attendance = todayAttendance || (await Attendance.create({
     org_id: orgId,
     emp_id: empId,
+    branch_id: employee.branch_id,
     date: getTodayDateString(),
     shift_id: employee.shift_id,
     status: 'absent',
@@ -250,6 +295,14 @@ async function checkIn({ orgId, empId, body, req }) {
 
   await redisClient.del(getCooldownKey(orgId, empId));
   await log(req.employee, 'attendance.check_in', { type: 'attendance_session', id: session.id }, null, { attendanceId: attendance.id }, req);
+  await pushLiveFeedEvent(orgId, {
+    empId,
+    empName: employee.name,
+    action: 'check-in',
+    time: session.check_in_time,
+    selfieUrl: null,
+    status: attendance.status,
+  });
 
   return {
     session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
@@ -259,7 +312,7 @@ async function checkIn({ orgId, empId, body, req }) {
 }
 
 async function checkOut({ orgId, empId, body, req }) {
-  const { shift } = await getEmployeeContext(orgId, empId);
+  const { employee, shift } = await getEmployeeContext(orgId, empId);
   const attendance = await getTodayAttendance(orgId, empId);
   if (!attendance) {
     throw createError('HTTP_404', 'Attendance record not found for today', 404);
@@ -309,6 +362,14 @@ async function checkOut({ orgId, empId, body, req }) {
   });
 
   await log(req.employee, 'attendance.check_out', { type: 'attendance_session', id: session.id }, null, { workedMinutes }, req);
+  await pushLiveFeedEvent(orgId, {
+    empId,
+    empName: employee.name,
+    action: 'check-out',
+    time: session.check_out_time,
+    selfieUrl: null,
+    status: computed.status,
+  });
 
   return {
     session: {
@@ -364,7 +425,7 @@ async function listAttendance(orgId, query) {
 
   const rows = await Attendance.findAll({
     where,
-    include: [{ model: Employee, as: 'employee', attributes: ['id', 'first_name', 'last_name', 'email'] }],
+    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name', 'email'] }],
     order: [['date', 'DESC'], ['created_at', 'DESC']],
     limit: Math.min(Number(query.limit || 20), 100),
   });
@@ -375,12 +436,200 @@ async function listAttendance(orgId, query) {
     status: row.status,
     totalWorkedMins: row.total_worked_minutes || 0,
     sessionsToday: row.session_count || 0,
+    checkInTime: row.first_check_in,
+    checkOutTime: row.last_check_out,
+    workingHours: Number(row.total_worked_minutes || 0) / 60,
+    isLate: Boolean(row.is_late),
+    isAnomaly: Boolean(row.is_anomaly),
     employee: row.employee ? {
       id: row.employee.id,
-      name: `${row.employee.first_name || ''} ${row.employee.last_name || ''}`.trim(),
+      name: row.employee.name,
       email: row.employee.email,
     } : null,
   }));
+}
+
+function getDateRangeDays(days) {
+  const dates = [];
+
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const value = new Date();
+    value.setUTCDate(value.getUTCDate() - offset);
+    dates.push(value.toISOString().slice(0, 10));
+  }
+
+  return dates;
+}
+
+async function getTodayStats(orgId) {
+  const today = getTodayDateString();
+  const employeeCount = await Employee.count({
+    where: { org_id: orgId, is_active: true },
+  });
+
+  const rows = await Attendance.findAll({
+    where: { org_id: orgId, date: today },
+  });
+
+  const pendingLeaves = await LeaveRequest.count({
+    where: { org_id: orgId, status: 'pending' },
+  });
+
+  const pendingRegularisations = await Regularisation.count({
+    where: { org_id: orgId, status: { [Op.in]: ['pending', 'manager_approved'] } },
+  });
+
+  const pendingDeviceExceptions = await DeviceException.count({
+    where: { org_id: orgId, status: 'pending' },
+  });
+
+  const presentCount = rows.filter((row) => row.status === 'present').length;
+  const absentCount = rows.filter((row) => row.status === 'absent').length;
+  const leaveCount = rows.filter((row) => row.status === 'on_leave').length;
+  const lateCount = rows.filter((row) => row.is_late).length;
+
+  return {
+    employeeCount,
+    checkedInCount: rows.filter((row) => row.first_check_in).length,
+    presentCount,
+    absentCount,
+    leaveCount,
+    lateCount,
+    pendingLeaves,
+    pendingRegularisations,
+    pendingExceptions: pendingDeviceExceptions,
+  };
+}
+
+async function getTrendStats(orgId, query) {
+  const days = Math.min(Math.max(Number(query.days || 30), 1), 90);
+  const dates = getDateRangeDays(days);
+  const rows = await Attendance.findAll({
+    where: {
+      org_id: orgId,
+      date: {
+        [Op.between]: [dates[0], dates[dates.length - 1]],
+      },
+    },
+    attributes: ['date', 'status', 'is_late'],
+    order: [['date', 'ASC']],
+  });
+
+  return dates.map((date) => {
+    const dayRows = rows.filter((row) => row.date === date);
+    return {
+      date,
+      present: dayRows.filter((row) => row.status === 'present').length,
+      absent: dayRows.filter((row) => row.status === 'absent').length,
+      leave: dayRows.filter((row) => row.status === 'on_leave').length,
+      late: dayRows.filter((row) => row.is_late).length,
+    };
+  });
+}
+
+async function getTopLateEmployees(orgId, query) {
+  const limit = Math.min(Math.max(Number(query.limit || 5), 1), 20);
+  const currentDate = new Date();
+  const start = new Date(Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  const end = new Date(Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+  const rows = await Attendance.findAll({
+    where: {
+      org_id: orgId,
+      is_late: true,
+      date: {
+        [Op.between]: [start, end],
+      },
+    },
+    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name'] }],
+  });
+
+  const grouped = rows.reduce((accumulator, row) => {
+    const key = row.emp_id;
+    if (!accumulator[key]) {
+      accumulator[key] = {
+        empId: row.emp_id,
+        name: row.employee ? row.employee.name : 'Unknown',
+        count: 0,
+      };
+    }
+
+    accumulator[key].count += 1;
+    return accumulator;
+  }, {});
+
+  return Object.values(grouped)
+    .sort((left, right) => right.count - left.count)
+    .slice(0, limit);
+}
+
+async function getRecentActivity(orgId, query) {
+  const limit = Math.min(Math.max(Number(query.limit || 10), 1), 50);
+  const liveEvents = await readLiveFeedEvents(orgId, limit);
+
+  if (liveEvents.length > 0) {
+    return liveEvents;
+  }
+
+  const rows = await AuditLog.findAll({
+    where: {
+      org_id: orgId,
+      action: {
+        [Op.in]: ['attendance.check_in', 'attendance.check_out', 'attendance.manual_mark'],
+      },
+    },
+    order: [['created_at', 'DESC']],
+    limit,
+  });
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    action: row.action,
+    time: row.created_at,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+  }));
+}
+
+async function getLiveBoard(orgId, query) {
+  const limit = Math.min(Math.max(Number(query.limit || 20), 1), 50);
+  const events = await readLiveFeedEvents(orgId, limit);
+  const onlineEmployeeIds = new Set();
+
+  const openAttendances = await Attendance.findAll({
+    where: {
+      org_id: orgId,
+      date: getTodayDateString(),
+    },
+    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name'] }],
+    order: [['updated_at', 'DESC']],
+  });
+
+  const rows = openAttendances.map((attendance) => {
+    const isCheckedIn = Boolean(attendance.first_check_in) && !attendance.last_check_out;
+    if (isCheckedIn) {
+      onlineEmployeeIds.add(attendance.emp_id);
+    }
+
+    return {
+      attendanceId: attendance.id,
+      empId: attendance.emp_id,
+      empName: attendance.employee ? attendance.employee.name : 'Unknown',
+      status: attendance.status,
+      isCheckedIn,
+      time: attendance.last_check_out || attendance.first_check_in,
+      selfieUrl: null,
+      totalWorkedMins: attendance.total_worked_minutes || 0,
+    };
+  });
+
+  return {
+    rows,
+    events,
+    summary: {
+      checkedInCount: onlineEmployeeIds.size,
+      totalRows: rows.length,
+    },
+  };
 }
 
 async function getAttendanceHistory(orgId, empId, query) {
@@ -496,4 +745,9 @@ module.exports = {
   getAttendanceHistory,
   getAttendanceById,
   manualMark,
+  getTodayStats,
+  getTrendStats,
+  getTopLateEmployees,
+  getRecentActivity,
+  getLiveBoard,
 };
