@@ -8,6 +8,7 @@ const {
   DeviceToken,
   Employee,
   LeaveRequest,
+  Organisation,
   Regularisation,
   Shift,
 } = require('../../models');
@@ -27,8 +28,55 @@ function createError(code, message, statusCode, details = []) {
   return error;
 }
 
-function getTodayDateString() {
-  return new Date().toISOString().slice(0, 10);
+function getDatePartsInTimezone(value, timezone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone || 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(value).reduce((accumulator, part) => {
+    if (part.type !== 'literal') {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+  };
+}
+
+function formatDateParts(parts) {
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+function getTodayDateString(timezone = 'UTC') {
+  return formatDateParts(getDatePartsInTimezone(new Date(), timezone));
+}
+
+function getDateStringInTimezone(value, timezone = 'UTC') {
+  return formatDateParts(getDatePartsInTimezone(value, timezone));
+}
+
+function getMonthRangeInTimezone(timezone = 'UTC', value = new Date()) {
+  const current = getDatePartsInTimezone(value, timezone);
+  const start = `${current.year}-${String(current.month).padStart(2, '0')}-01`;
+  const lastDay = new Date(Date.UTC(current.year, current.month, 0)).getUTCDate();
+  const end = `${current.year}-${String(current.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+  return { start, end };
+}
+
+async function getOrgTimezone(orgId) {
+  const organisation = await Organisation.findOne({
+    where: { id: orgId },
+    attributes: ['timezone'],
+  });
+
+  return organisation && organisation.timezone ? organisation.timezone : 'UTC';
 }
 
 function getCooldownKey(orgId, empId) {
@@ -95,9 +143,9 @@ async function getEmployeeContext(orgId, empId) {
   return { employee, shift, branch };
 }
 
-async function getTodayAttendance(orgId, empId) {
+async function getTodayAttendance(orgId, empId, timezone = 'UTC') {
   return Attendance.findOne({
-    where: { org_id: orgId, emp_id: empId, date: getTodayDateString() },
+    where: { org_id: orgId, emp_id: empId, date: getTodayDateString(timezone) },
   });
 }
 
@@ -143,21 +191,23 @@ async function validateDevice({ orgId, employee, deviceId, useDeviceException, e
   }
 
   if (useDeviceException && exceptionId) {
-    const exception = await DeviceException.findOne({
-      where: {
-        id: exceptionId,
-        org_id: orgId,
-        emp_id: employee.id,
-        status: 'approved',
-        expires_at: { [Op.gt]: new Date() },
-      },
-    });
+    const [updatedCount] = await DeviceException.update(
+      { status: 'used' },
+      {
+        where: {
+          id: exceptionId,
+          org_id: orgId,
+          emp_id: employee.id,
+          temp_device_id: deviceId,
+          status: 'approved',
+          expires_at: { [Op.gt]: new Date() },
+        },
+      }
+    );
 
-    if (!exception) {
+    if (!updatedCount) {
       throw createError('AUTH_009', 'Device exception is invalid or expired', 401);
     }
-
-    await exception.update({ status: 'used' });
     return;
   }
 
@@ -189,8 +239,9 @@ function buildShiftInfo(shift) {
 }
 
 async function getTodayState(orgId, empId) {
+  const timezone = await getOrgTimezone(orgId);
   const { shift } = await getEmployeeContext(orgId, empId);
-  const attendance = await getTodayAttendance(orgId, empId);
+  const attendance = await getTodayAttendance(orgId, empId, timezone);
   const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
 
   if (!attendance) {
@@ -232,6 +283,7 @@ async function requestChallenge(orgId, empId) {
 }
 
 async function checkIn({ orgId, empId, body, req }) {
+  const timezone = await getOrgTimezone(orgId);
   await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
@@ -247,7 +299,7 @@ async function checkIn({ orgId, empId, body, req }) {
 
   await faceService.verifyFace(empId, orgId, body.faceEmbedding || null, faceService.decodeSelfie(body.selfieBase64));
 
-  const todayAttendance = await getTodayAttendance(orgId, empId);
+  const todayAttendance = await getTodayAttendance(orgId, empId, timezone);
   if (todayAttendance) {
     const openSession = await getOpenSession(todayAttendance.id);
     if (openSession) {
@@ -268,7 +320,7 @@ async function checkIn({ orgId, empId, body, req }) {
     org_id: orgId,
     emp_id: empId,
     branch_id: employee.branch_id,
-    date: getTodayDateString(),
+    date: getTodayDateString(timezone),
     shift_id: employee.shift_id,
     status: 'absent',
     first_check_in: new Date(),
@@ -312,8 +364,9 @@ async function checkIn({ orgId, empId, body, req }) {
 }
 
 async function checkOut({ orgId, empId, body, req }) {
+  const timezone = await getOrgTimezone(orgId);
   const { employee, shift } = await getEmployeeContext(orgId, empId);
-  const attendance = await getTodayAttendance(orgId, empId);
+  const attendance = await getTodayAttendance(orgId, empId, timezone);
   if (!attendance) {
     throw createError('HTTP_404', 'Attendance record not found for today', 404);
   }
@@ -385,7 +438,8 @@ async function checkOut({ orgId, empId, body, req }) {
 }
 
 async function undoCheckout({ orgId, empId, req }) {
-  const attendance = await getTodayAttendance(orgId, empId);
+  const timezone = await getOrgTimezone(orgId);
+  const attendance = await getTodayAttendance(orgId, empId, timezone);
   if (!attendance) {
     throw createError('HTTP_404', 'Attendance record not found for today', 404);
   }
@@ -449,22 +503,23 @@ async function listAttendance(orgId, query) {
   }));
 }
 
-function getDateRangeDays(days) {
+function getDateRangeDays(days, timezone = 'UTC') {
   const dates = [];
 
   for (let offset = days - 1; offset >= 0; offset -= 1) {
     const value = new Date();
     value.setUTCDate(value.getUTCDate() - offset);
-    dates.push(value.toISOString().slice(0, 10));
+    dates.push(getDateStringInTimezone(value, timezone));
   }
 
   return dates;
 }
 
 async function getTodayStats(orgId) {
-  const today = getTodayDateString();
+  const timezone = await getOrgTimezone(orgId);
+  const today = getTodayDateString(timezone);
   const employeeCount = await Employee.count({
-    where: { org_id: orgId, is_active: true },
+    where: { org_id: orgId, is_active: true, role: { [Op.ne]: 'superadmin' } },
   });
 
   const rows = await Attendance.findAll({
@@ -484,8 +539,9 @@ async function getTodayStats(orgId) {
   });
 
   const presentCount = rows.filter((row) => row.status === 'present').length;
-  const absentCount = rows.filter((row) => row.status === 'absent').length;
   const leaveCount = rows.filter((row) => row.status === 'on_leave').length;
+  const recordedAbsentCount = rows.filter((row) => row.status === 'absent').length;
+  const absentCount = Math.max(employeeCount - presentCount - leaveCount, recordedAbsentCount);
   const lateCount = rows.filter((row) => row.is_late).length;
 
   return {
@@ -502,8 +558,9 @@ async function getTodayStats(orgId) {
 }
 
 async function getTrendStats(orgId, query) {
+  const timezone = await getOrgTimezone(orgId);
   const days = Math.min(Math.max(Number(query.days || 30), 1), 90);
-  const dates = getDateRangeDays(days);
+  const dates = getDateRangeDays(days, timezone);
   const rows = await Attendance.findAll({
     where: {
       org_id: orgId,
@@ -528,10 +585,9 @@ async function getTrendStats(orgId, query) {
 }
 
 async function getTopLateEmployees(orgId, query) {
+  const timezone = await getOrgTimezone(orgId);
   const limit = Math.min(Math.max(Number(query.limit || 5), 1), 20);
-  const currentDate = new Date();
-  const start = new Date(Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(), 1)).toISOString().slice(0, 10);
-  const end = new Date(Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+  const { start, end } = getMonthRangeInTimezone(timezone);
   const rows = await Attendance.findAll({
     where: {
       org_id: orgId,
@@ -591,6 +647,7 @@ async function getRecentActivity(orgId, query) {
 }
 
 async function getLiveBoard(orgId, query) {
+  const timezone = await getOrgTimezone(orgId);
   const limit = Math.min(Math.max(Number(query.limit || 20), 1), 50);
   const events = await readLiveFeedEvents(orgId, limit);
   const onlineEmployeeIds = new Set();
@@ -598,7 +655,7 @@ async function getLiveBoard(orgId, query) {
   const openAttendances = await Attendance.findAll({
     where: {
       org_id: orgId,
-      date: getTodayDateString(),
+      date: getTodayDateString(timezone),
     },
     include: [{ model: Employee, as: 'employee', attributes: ['id', 'name'] }],
     order: [['updated_at', 'DESC']],

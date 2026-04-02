@@ -8,15 +8,22 @@ const employeeController = require('./employee.controller');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
+const adminGuard = roleGuard('admin', 'manager', 'superadmin');
 
-router.use(authenticate, orgGuard, roleGuard('admin', 'manager', 'superadmin'));
+router.use(authenticate, orgGuard);
 
-router.get('/', asyncHandler(employeeController.listEmployees));
-router.post('/bulk-upload', upload.single('file'), asyncHandler(employeeController.bulkUpload));
-router.get('/:id/attendance-summary', asyncHandler(employeeController.attendanceSummary));
-router.get('/:id', asyncHandler(employeeController.getEmployee));
-router.post('/', asyncHandler(employeeController.createEmployee));
-router.put('/:id', asyncHandler(employeeController.updateEmployee));
-router.delete('/:id', asyncHandler(employeeController.deleteEmployee));
+router.get('/device-exceptions/mine', asyncHandler(employeeController.listOwnDeviceExceptions));
+router.get('/device-exceptions', adminGuard, asyncHandler(employeeController.listDeviceExceptions));
+router.post('/device-exceptions', adminGuard, asyncHandler(employeeController.createDeviceException));
+router.put('/device-exceptions/:id/approve', adminGuard, asyncHandler(employeeController.approveDeviceException));
+router.put('/device-exceptions/:id/reject', adminGuard, asyncHandler(employeeController.rejectDeviceException));
+
+router.get('/', adminGuard, asyncHandler(employeeController.listEmployees));
+router.post('/bulk-upload', adminGuard, upload.single('file'), asyncHandler(employeeController.bulkUpload));
+router.get('/:id/attendance-summary', adminGuard, asyncHandler(employeeController.attendanceSummary));
+router.get('/:id', adminGuard, asyncHandler(employeeController.getEmployee));
+router.post('/', adminGuard, asyncHandler(employeeController.createEmployee));
+router.put('/:id', adminGuard, asyncHandler(employeeController.updateEmployee));
+router.delete('/:id', adminGuard, asyncHandler(employeeController.deleteEmployee));
 
 module.exports = router;

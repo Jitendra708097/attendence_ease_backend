@@ -7,6 +7,16 @@ const { getPagingData } = require('../../utils/pagination');
 const { hashValue } = require('../../utils/auth');
 const { notification } = require('../../queues');
 
+function getTenantEmployeeWhere(orgId, extraWhere = {}) {
+  return {
+    org_id: orgId,
+    role: {
+      [Op.ne]: 'superadmin',
+    },
+    ...extraWhere,
+  };
+}
+
 function randomTempPassword() {
   return crypto.randomBytes(6).toString('base64url');
 }
@@ -34,9 +44,7 @@ async function resolveEmployeeReferences(orgId, payload) {
 
 async function generateEmpCode(orgId, orgSlug) {
   const count = await Employee.count({
-    where: {
-      org_id: orgId,
-    },
+    where: getTenantEmployeeWhere(orgId),
   });
 
   const nextNumber = String(count + 1).padStart(4, '0');
@@ -67,9 +75,7 @@ async function listEmployees(orgId, query) {
   const page = Number.parseInt(query.page, 10) || 1;
   const limit = Math.min(Number.parseInt(query.limit, 10) || 20, 100);
   const offset = (page - 1) * limit;
-  const where = {
-    org_id: orgId,
-  };
+  const where = getTenantEmployeeWhere(orgId);
 
   if (query.branch) {
     where.branch_id = query.branch;
@@ -122,10 +128,7 @@ async function listEmployees(orgId, query) {
 
 async function getEmployeeById(orgId, id) {
   const employee = await Employee.findOne({
-    where: {
-      id,
-      org_id: orgId,
-    },
+    where: getTenantEmployeeWhere(orgId, { id }),
     include: [
       { model: Branch, as: 'branch', attributes: ['id', 'name'] },
       { model: Department, as: 'department', attributes: ['id', 'name'], required: false },
@@ -144,6 +147,13 @@ async function getEmployeeById(orgId, id) {
 }
 
 async function createEmployee(orgId, organisation, payload) {
+  if (payload.role === 'superadmin') {
+    const error = new Error('Invalid employee role');
+    error.code = 'EMP_002';
+    error.statusCode = 400;
+    throw error;
+  }
+
   await resolveEmployeeReferences(orgId, payload);
 
   const tempPassword = randomTempPassword();
@@ -187,10 +197,7 @@ async function createEmployee(orgId, organisation, payload) {
 
 async function updateEmployee(orgId, id, payload) {
   const employee = await Employee.findOne({
-    where: {
-      id,
-      org_id: orgId,
-    },
+    where: getTenantEmployeeWhere(orgId, { id }),
   });
 
   if (!employee) {
@@ -224,10 +231,7 @@ async function updateEmployee(orgId, id, payload) {
 
 async function deleteEmployee(orgId, id) {
   const employee = await Employee.findOne({
-    where: {
-      id,
-      org_id: orgId,
-    },
+    where: getTenantEmployeeWhere(orgId, { id }),
   });
 
   if (!employee) {
@@ -242,6 +246,18 @@ async function deleteEmployee(orgId, id) {
 }
 
 async function attendanceSummary(orgId, id) {
+  const employee = await Employee.findOne({
+    where: getTenantEmployeeWhere(orgId, { id }),
+    attributes: ['id'],
+  });
+
+  if (!employee) {
+    const error = new Error('Employee not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
   const summary = await Attendance.findAll({
     where: {
       org_id: orgId,

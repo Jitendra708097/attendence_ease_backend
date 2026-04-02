@@ -2,6 +2,7 @@ const { Organisation } = require('../../models');
 const { ok, fail } = require('../../utils/response');
 const { log } = require('../../utils/auditLog');
 const employeeService = require('./employee.service');
+const deviceExceptionService = require('./deviceException.service');
 const { validateEmployeePayload } = require('./employee.validators');
 
 async function listEmployees(req, res) {
@@ -91,6 +92,75 @@ async function attendanceSummary(req, res) {
   }
 }
 
+async function listDeviceExceptions(req, res) {
+  try {
+    const data = await deviceExceptionService.listDeviceExceptions({
+      orgId: req.org_id,
+      query: req.query,
+    });
+    return ok(res, data, 'Device exceptions fetched');
+  } catch (error) {
+    return fail(res, error.code || 'DEV_002', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function listOwnDeviceExceptions(req, res) {
+  try {
+    const data = await deviceExceptionService.listOwnDeviceExceptions({
+      orgId: req.org_id,
+      empId: req.employee.id,
+    });
+    return ok(res, data, 'Your device exceptions fetched');
+  } catch (error) {
+    return fail(res, error.code || 'DEV_003', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function createDeviceException(req, res) {
+  try {
+    const data = await deviceExceptionService.createDeviceException({
+      orgId: req.org_id,
+      empId: req.body.empId,
+      tempDeviceId: req.body.tempDeviceId,
+      reason: req.body.reason,
+      approveNow: req.body.approveNow !== false,
+      approvedBy: req.employee.id,
+    });
+    await log(req.employee, 'device_exception.create', { type: 'device_exception', id: data.id }, null, data, req);
+    return ok(res, data, 'Device exception created', 201);
+  } catch (error) {
+    return fail(res, error.code || 'DEV_004', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function approveDeviceException(req, res) {
+  try {
+    const data = await deviceExceptionService.approveDeviceException({
+      orgId: req.org_id,
+      id: req.params.id,
+      approvedBy: req.employee.id,
+    });
+    await log(req.employee, 'device_exception.approve', { type: 'device_exception', id: data.id }, null, data, req);
+    return ok(res, data, 'Device exception approved');
+  } catch (error) {
+    return fail(res, error.code || 'DEV_005', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function rejectDeviceException(req, res) {
+  try {
+    const data = await deviceExceptionService.rejectDeviceException({
+      orgId: req.org_id,
+      id: req.params.id,
+      approvedBy: req.employee.id,
+    });
+    await log(req.employee, 'device_exception.reject', { type: 'device_exception', id: data.id }, null, data, req);
+    return ok(res, data, 'Device exception rejected');
+  } catch (error) {
+    return fail(res, error.code || 'DEV_006', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   listEmployees,
   getEmployee,
@@ -99,4 +169,9 @@ module.exports = {
   deleteEmployee,
   bulkUpload,
   attendanceSummary,
+  listDeviceExceptions,
+  listOwnDeviceExceptions,
+  createDeviceException,
+  approveDeviceException,
+  rejectDeviceException,
 };

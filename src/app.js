@@ -12,9 +12,11 @@ const leaveRoutes = require('./modules/leave/leave.routes');
 const notificationRoutes = require('./modules/notification/notification.routes');
 const regularisationRoutes = require('./modules/regularisation/regularisation.routes');
 const shiftRoutes = require('./modules/shift/shift.routes');
+const superadminRoutes = require('./modules/superadmin/superadmin.routes');
 const requestId = require('./middleware/requestId');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
+// const face = require('./routes/face.routes');
 
 const app = express();
 
@@ -64,6 +66,8 @@ app.use('/api/v1/leaves', leaveRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/regularisations', regularisationRoutes);
 app.use('/api/v1/shifts', shiftRoutes);
+app.use('/api/v1/superadmin', superadminRoutes);
+// app.use('/api/v1/fac',face);
 
 app.use(notFound);
 app.use(errorHandler);
