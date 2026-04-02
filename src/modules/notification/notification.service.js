@@ -204,6 +204,30 @@ async function sendPush(empIds, payload) {
   };
 }
 
+async function queueWelcomeEmail(payload) {
+  if (!payload || !payload.email || !payload.organisationName || !payload.employeeName || !payload.tempPassword) {
+    throw createError('NOTIF_003', 'Welcome email payload is incomplete', 422);
+  }
+
+  const job = await notificationQueue.add(
+    'send_welcome_email',
+    {
+      email: payload.email,
+      organisationName: payload.organisationName,
+      employeeName: payload.employeeName,
+      tempPassword: payload.tempPassword,
+    },
+    {
+      jobId: `welcome_email_${payload.email}_${Date.now()}`,
+    }
+  );
+
+  return {
+    queued: true,
+    jobId: job.id,
+  };
+}
+
 async function listNotifications({ orgId, employeeId, query }) {
   const { page, limit, offset } = getPagination(query);
 
@@ -362,6 +386,7 @@ async function registerToken({ orgId, employeeId, body, req }) {
 
 module.exports = {
   sendPush,
+  queueWelcomeEmail,
   processSendPushJob,
   processSendWelcomeEmailJob,
   listNotifications,
