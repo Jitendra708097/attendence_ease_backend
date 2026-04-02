@@ -1,8 +1,4 @@
-const {
-  DeleteFacesCommand,
-  IndexFacesCommand,
-  SearchFacesByImageCommand,
-} = require('@aws-sdk/client-rekognition');
+const { DeleteFacesCommand, IndexFacesCommand, SearchFacesByImageCommand } = require('@aws-sdk/client-rekognition');
 const env = require('../../config/env');
 const rekognitionClient = require('../../config/rekognition');
 
