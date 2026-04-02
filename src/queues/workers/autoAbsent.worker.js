@@ -1,12 +1,5 @@
 const { Op } = require('sequelize');
-const {
-  Attendance,
-  Employee,
-  Holiday,
-  LeaveRequest,
-  Organisation,
-  Shift,
-} = require('../../models');
+const { Attendance, Employee, Holiday, LeaveRequest, Organisation, Shift } = require('../../models');
 const { autoAbsent } = require('../index');
 const { scheduleDailyJobs } = require('../schedulers/daily.scheduler');
 
