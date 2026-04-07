@@ -7,6 +7,8 @@ const { getPagingData } = require('../../utils/pagination');
 const { hashValue } = require('../../utils/auth');
 const { notification } = require('../../queues');
 
+const BULK_UPLOAD_MAX_ROWS = 500;
+
 function getTenantEmployeeWhere(orgId, extraWhere = {}) {
   return {
     org_id: orgId,
@@ -21,12 +23,72 @@ function randomTempPassword() {
   return crypto.randomBytes(6).toString('base64url');
 }
 
+function normalizeCellValue(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function buildEmpCodePrefix(orgSlug) {
+  const parts = String(orgSlug || '')
+    .split(/[^a-zA-Z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return 'EMP';
+  }
+
+  if (parts.length === 1) {
+    return parts[0].slice(0, 6).toUpperCase();
+  }
+
+  return parts
+    .slice(0, 6)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('');
+}
+
+function looksLikeUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function findReferenceByIdOrName(model, orgId, value, label, required = true) {
+  const normalizedValue = normalizeCellValue(value);
+
+  if (!normalizedValue) {
+    if (!required) {
+      return null;
+    }
+
+    const error = new Error(`${label} is required`);
+    error.code = 'EMP_002';
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const record = await model.findOne({
+    where: {
+      org_id: orgId,
+      [Op.or]: [
+        ...(looksLikeUuid(normalizedValue) ? [{ id: normalizedValue }] : []),
+        { name: { [Op.iLike]: normalizedValue } },
+      ],
+    },
+  });
+
+  if (!record && required) {
+    const error = new Error(`Invalid ${label}`);
+    error.code = 'EMP_002';
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return record;
+}
+
 async function resolveEmployeeReferences(orgId, payload) {
-  const branch = await Branch.findOne({ where: { id: payload.branchId, org_id: orgId } });
-  const shift = await Shift.findOne({ where: { id: payload.shiftId, org_id: orgId } });
-  const department = payload.departmentId
-    ? await Department.findOne({ where: { id: payload.departmentId, org_id: orgId } })
-    : null;
+  const branch = await findReferenceByIdOrName(Branch, orgId, payload.branchId, 'branch');
+  const shift = await findReferenceByIdOrName(Shift, orgId, payload.shiftId, 'shift');
+  const department = await findReferenceByIdOrName(Department, orgId, payload.departmentId, 'department', false);
 
   if (!branch || !shift || (payload.departmentId && !department)) {
     const error = new Error('Invalid employee references');
@@ -42,13 +104,26 @@ async function resolveEmployeeReferences(orgId, payload) {
   };
 }
 
+function mapBulkUploadRow(row = {}) {
+  return {
+    name: normalizeCellValue(row.name),
+    email: normalizeCellValue(row.email).toLowerCase(),
+    phone: normalizeCellValue(row.phone) || null,
+    branchId: normalizeCellValue(row.branch_id || row.branch_name || row.branch),
+    departmentId: normalizeCellValue(row.department_id || row.department_name || row.department) || null,
+    shiftId: normalizeCellValue(row.shift_id || row.shift_name || row.shift),
+    role: normalizeCellValue(row.role || 'employee').toLowerCase() || 'employee',
+    empCode: normalizeCellValue(row.emp_code) || null,
+  };
+}
+
 async function generateEmpCode(orgId, orgSlug) {
   const count = await Employee.count({
     where: getTenantEmployeeWhere(orgId),
   });
 
   const nextNumber = String(count + 1).padStart(4, '0');
-  return `${String(orgSlug).toUpperCase()}-${nextNumber}`;
+  return `${buildEmpCodePrefix(orgSlug)}-${nextNumber}`;
 }
 
 function mapEmployee(employee) {
@@ -154,16 +229,16 @@ async function createEmployee(orgId, organisation, payload) {
     throw error;
   }
 
-  await resolveEmployeeReferences(orgId, payload);
+  const references = await resolveEmployeeReferences(orgId, payload);
 
   const tempPassword = randomTempPassword();
   const passwordHash = await hashValue(tempPassword);
   const empCode = payload.empCode || (await generateEmpCode(orgId, organisation.slug));
 
   const employee = await scopedModel(Employee, orgId).create({
-    branch_id: payload.branchId,
-    department_id: payload.departmentId || null,
-    shift_id: payload.shiftId,
+    branch_id: references.branch.id,
+    department_id: references.department ? references.department.id : null,
+    shift_id: references.shift.id,
     emp_code: empCode,
     name: payload.name,
     email: String(payload.email).trim().toLowerCase(),
@@ -208,11 +283,15 @@ async function updateEmployee(orgId, id, payload) {
   }
 
   if (payload.branchId || payload.shiftId || payload.departmentId) {
-    await resolveEmployeeReferences(orgId, {
+    const references = await resolveEmployeeReferences(orgId, {
       branchId: payload.branchId || employee.branch_id,
       shiftId: payload.shiftId || employee.shift_id,
       departmentId: payload.departmentId || employee.department_id,
     });
+
+    payload.branchId = references.branch.id;
+    payload.shiftId = references.shift.id;
+    payload.departmentId = references.department ? references.department.id : null;
   }
 
   await employee.update({
@@ -243,6 +322,49 @@ async function deleteEmployee(orgId, id) {
 
   await employee.destroy();
   return true;
+}
+
+async function deleteEmployees(orgId, ids = []) {
+  const normalizedIds = Array.from(new Set((ids || []).filter(Boolean)));
+
+  if (normalizedIds.length === 0) {
+    const error = new Error('Employee ids are required');
+    error.code = 'EMP_011';
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const employees = await Employee.findAll({
+    where: getTenantEmployeeWhere(orgId, {
+      id: {
+        [Op.in]: normalizedIds,
+      },
+    }),
+    attributes: ['id'],
+  });
+
+  const foundIds = employees.map((employee) => employee.id);
+
+  if (foundIds.length !== normalizedIds.length) {
+    const error = new Error('One or more employees were not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  await Employee.destroy({
+    where: {
+      org_id: orgId,
+      id: {
+        [Op.in]: normalizedIds,
+      },
+    },
+  });
+
+  return {
+    deletedCount: normalizedIds.length,
+    ids: normalizedIds,
+  };
 }
 
 async function attendanceSummary(orgId, id) {
@@ -282,18 +404,16 @@ async function bulkUpload(orgId, organisation, fileBuffer) {
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
   const results = [];
 
+  if (rows.length > BULK_UPLOAD_MAX_ROWS) {
+    const error = new Error(`You can upload at most ${BULK_UPLOAD_MAX_ROWS} employees at a time`);
+    error.code = 'EMP_009';
+    error.statusCode = 422;
+    throw error;
+  }
+
   for (const [index, row] of rows.entries()) {
     try {
-      const created = await createEmployee(orgId, organisation, {
-        name: row.name,
-        email: row.email,
-        phone: row.phone,
-        branchId: row.branch_id,
-        departmentId: row.department_id || null,
-        shiftId: row.shift_id,
-        role: row.role || 'employee',
-        empCode: row.emp_code || null,
-      });
+      const created = await createEmployee(orgId, organisation, mapBulkUploadRow(row));
 
       results.push({
         row: index + 2,
@@ -315,11 +435,13 @@ async function bulkUpload(orgId, organisation, fileBuffer) {
 }
 
 module.exports = {
+  BULK_UPLOAD_MAX_ROWS,
   listEmployees,
   getEmployeeById,
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  deleteEmployees,
   attendanceSummary,
   bulkUpload,
 };

@@ -19,6 +19,7 @@ router.put('/device-exceptions/:id/approve', adminGuard, asyncHandler(employeeCo
 router.put('/device-exceptions/:id/reject', adminGuard, asyncHandler(employeeController.rejectDeviceException));
 
 router.get('/', adminGuard, asyncHandler(employeeController.listEmployees));
+router.delete('/', adminGuard, asyncHandler(employeeController.deleteEmployees));
 router.post('/bulk-upload', adminGuard, upload.single('file'), asyncHandler(employeeController.bulkUpload));
 router.get('/:id/attendance-summary', adminGuard, asyncHandler(employeeController.attendanceSummary));
 router.get('/:id', adminGuard, asyncHandler(employeeController.getEmployee));

@@ -20,7 +20,7 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl].filter(Boolean);
+const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl,env.frontend_mobileUrl].filter(Boolean);
 
 morgan.token('request-id', (req) => req.id || '-');
 

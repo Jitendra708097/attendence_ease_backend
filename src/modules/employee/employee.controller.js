@@ -65,6 +65,16 @@ async function deleteEmployee(req, res) {
   }
 }
 
+async function deleteEmployees(req, res) {
+  try {
+    const data = await employeeService.deleteEmployees(req.org_id, req.body.ids);
+    await log(req.employee, 'employee.bulk_delete', { type: 'employee_bulk_delete', id: req.employee.id }, null, data, req);
+    return ok(res, data, 'Employees deleted');
+  } catch (error) {
+    return fail(res, error.code || 'EMP_011', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function bulkUpload(req, res) {
   if (!req.file) {
     return fail(res, 'EMP_008', 'Excel file is required', [], 400);
@@ -167,6 +177,7 @@ module.exports = {
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  deleteEmployees,
   bulkUpload,
   attendanceSummary,
   listDeviceExceptions,

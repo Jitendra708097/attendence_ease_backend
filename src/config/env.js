@@ -100,6 +100,7 @@ const env = {
   frontend: {
     adminUrl: readEnv('FRONTEND_ADMIN_URL', readEnv('ADMIN_WEB_URL')),
     superadminUrl: readEnv('FRONTEND_SUPERADMIN_URL', readEnv('SUPERADMIN_WEB_URL')),
+    mobileUrl: readEnv('FRONTED_MOBILE_URL', readEnv('MOBILE_APP'))
   },
   smtp: {
     host: readEnv('SMTP_HOST', ''),
