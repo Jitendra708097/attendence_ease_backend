@@ -13,6 +13,7 @@ const notificationRoutes = require('./modules/notification/notification.routes')
 const regularisationRoutes = require('./modules/regularisation/regularisation.routes');
 const shiftRoutes = require('./modules/shift/shift.routes');
 const superadminRoutes = require('./modules/superadmin/superadmin.routes');
+const billingRoutes = require('./modules/billing/billing.routes');
 const requestId = require('./middleware/requestId');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
@@ -66,6 +67,7 @@ app.use('/api/v1/leaves', leaveRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/regularisations', regularisationRoutes);
 app.use('/api/v1/shifts', shiftRoutes);
+app.use('/api/v1/billing', billingRoutes);
 app.use('/api/v1/superadmin', superadminRoutes);
 // app.use('/api/v1/fac',face);
 

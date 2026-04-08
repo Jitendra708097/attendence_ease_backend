@@ -109,6 +109,11 @@ const env = {
     pass: readEnv('SMTP_PASS', ''),
     from: readEnv('EMAIL_FROM', readEnv('SMTP_USER', '')),
   },
+  razorpay: {
+    keyId: readEnv('RAZORPAY_KEY_ID', ''),
+    secret: readEnv('RAZORPAY_SECRET', ''),
+    webhookSecret: readEnv('RAZORPAY_WEBHOOK_SECRET', ''),
+  },
 };
 
 module.exports = env;

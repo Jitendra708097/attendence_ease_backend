@@ -7,12 +7,8 @@ const queues = require('../../queues');
 const { queueWelcomeEmail } = require('../notification/notification.service');
 const { PLAN_PRICES } = require('../../utils/constants');
 
-// const PLAN_PRICES = {
-//   trial: 0,
-//   starter: 50,
-//   growth: 75,
-//   enterprise: 120,
-// };
+const ALLOWED_PLANS = ['trial', 'standard'];
+
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -302,6 +298,12 @@ async function createOrg(payload) {
   const plan = payload.plan || 'trial';
   const timezone = payload.timezone || 'Asia/Kolkata';
 
+  if (!ALLOWED_PLANS.includes(plan)) {
+    throw createError('SA_025', 'Invalid organisation plan', 422, [
+      { field: 'plan', message: 'Plan must be trial or standard' },
+    ]);
+  }
+
   if (!orgName || !adminFirstName || !adminEmail) {
     throw createError('SA_023', 'Organisation name, admin name, and admin email are required', 422, [
       { field: 'orgName', message: 'Organisation name is required' },
@@ -340,7 +342,7 @@ async function createOrg(payload) {
         slug,
         plan,
         timezone,
-        trial_ends_at: plan === 'trial' ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
+        trial_ends_at: plan === 'trial' ? new Date(Date.now() + 15 * 24 * 60 * 60 * 1000) : null,
         is_active: true,
         settings: {
           timezone,
@@ -590,6 +592,12 @@ async function activateOrg({ orgId }) {
 }
 
 async function changePlan({ orgId, plan }) {
+  if (!ALLOWED_PLANS.includes(plan)) {
+    throw createError('SA_025', 'Invalid organisation plan', 422, [
+      { field: 'plan', message: 'Plan must be trial or standard' },
+    ]);
+  }
+
   const org = await Organisation.findOne({ where: { id: orgId } });
 
   if (!org) {

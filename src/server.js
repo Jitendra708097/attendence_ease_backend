@@ -2,9 +2,10 @@ const env = require('./config/env');
 const { connectDatabase } = require('./config/database');
 const { connectRedis, redisClient } = require('./config/redis');
 const app = require('./app');
-const { registerQueues } = require('./queues/bootstrap');
+const { registerQueues, closeQueues } = require('./queues/bootstrap');
 
 let server;
+let shuttingDown = false;
 
 async function startServer() {
   const connectionResults = await Promise.allSettled([connectDatabase(), connectRedis()]);
@@ -43,6 +44,11 @@ async function startServer() {
 }
 
 async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
   console.log(`[bootstrap] Received ${signal}, shutting down...`);
 
   if (!server) {
@@ -50,6 +56,13 @@ async function shutdown(signal) {
   }
 
   server.close(async () => {
+    try {
+      await closeQueues();
+      console.log('[bootstrap] Queue connections closed');
+    } catch (error) {
+      console.error('[bootstrap] Failed to close queues cleanly:', error.message);
+    }
+
     try {
       if (redisClient.status === 'ready' || redisClient.status === 'connect') {
         await redisClient.quit();
@@ -65,6 +78,11 @@ async function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGUSR2', () => {
+  shutdown('SIGUSR2').finally(() => {
+    process.kill(process.pid, 'SIGUSR2');
+  });
+});
 
 startServer().catch((error) => {
   console.error('[bootstrap] Startup failed:', error);

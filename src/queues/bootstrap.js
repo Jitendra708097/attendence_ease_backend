@@ -6,6 +6,7 @@ const { registerNotificationWorker } = require('./workers/notification.worker');
 const { registerOfflineSyncWorker } = require('./workers/offlineSync.worker');
 const { registerReportGenerationWorker } = require('./workers/reportGeneration.worker');
 const { registerDailyScheduler } = require('./schedulers/daily.scheduler');
+const { closeQueues } = require('./index');
 
 function registerQueues() {
   registerAutoAbsentWorker();
@@ -21,4 +22,5 @@ function registerQueues() {
 
 module.exports = {
   registerQueues,
+  closeQueues,
 };

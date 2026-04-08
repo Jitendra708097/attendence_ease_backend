@@ -17,7 +17,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       plan: {
-        type: DataTypes.ENUM('trial', 'starter', 'growth', 'enterprise'),
+        type: DataTypes.ENUM('trial', 'standard', 'starter', 'growth', 'enterprise'),
         defaultValue: 'trial',
       },
       trial_ends_at: DataTypes.DATE,
