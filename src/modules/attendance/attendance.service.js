@@ -164,19 +164,26 @@ async function getOpenSession(attendanceId) {
 }
 
 async function validateChallenge({ orgId, empId, challengeToken, captureTimestamp }) {
+  // ✅ FIX: Validate challenge token format
+  if (!challengeToken || typeof challengeToken !== 'string') {
+    throw createError('ATT_013', 'Invalid challenge token format', 422);
+  }
+  
   const payload = await consumeChallenge(challengeToken);
 
   if (!payload) {
-    throw createError('ATT_008', 'Challenge token is invalid or expired', 400);
+    throw createError('ATT_008', 'Challenge token is invalid, expired, or already used', 401);
   }
 
+  // ✅ FIX: Validate challenge belongs to this employee and org
   if (payload.orgId !== orgId || payload.empId !== empId) {
-    throw createError('ATT_009', 'Challenge token does not belong to this employee', 400);
+    throw createError('ATT_009', 'Challenge token does not match employee', 401);
   }
 
+  // ✅ FIX: Validate timestamp is recent
   const captureTime = Number(captureTimestamp);
   if (!Number.isFinite(captureTime) || Math.abs(Date.now() - captureTime) > 35 * 1000) {
-    throw createError('ATT_011', 'Capture timestamp is outside the allowed window', 400);
+    throw createError('ATT_011', 'Capture timestamp is outside the allowed window', 401);
   }
 }
 
@@ -299,14 +306,32 @@ async function checkIn({ orgId, empId, body, req }) {
 
   await faceService.verifyFace(empId, orgId, body.faceEmbedding || null, faceService.decodeSelfie(body.selfieBase64));
 
-  const todayAttendance = await getTodayAttendance(orgId, empId, timezone);
-  if (todayAttendance) {
-    const openSession = await getOpenSession(todayAttendance.id);
+  // ✅ FIX: Use findOrCreate to prevent race condition
+  const [attendance, created] = await Attendance.findOrCreate({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      date: getTodayDateString(timezone),
+    },
+    defaults: {
+      branch_id: employee.branch_id,
+      shift_id: employee.shift_id,
+      status: 'absent',
+      first_check_in: new Date(),
+      session_count: 0,
+      total_worked_minutes: 0,
+      is_anomaly: Number(body.accuracy) > 50,
+    },
+  });
+
+  // Check if session already open
+  if (!created) {
+    const openSession = await getOpenSession(attendance.id);
     if (openSession) {
       throw createError('ATT_003', 'An attendance session is already open', 400);
     }
 
-    if (Number(todayAttendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
+    if (Number(attendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
       throw createError('ATT_004', 'Maximum sessions reached for today', 400);
     }
 
@@ -315,19 +340,6 @@ async function checkIn({ orgId, empId, body, req }) {
       throw createError('ATT_004', 'Employee is in cooldown period', 400);
     }
   }
-
-  const attendance = todayAttendance || (await Attendance.create({
-    org_id: orgId,
-    emp_id: empId,
-    branch_id: employee.branch_id,
-    date: getTodayDateString(timezone),
-    shift_id: employee.shift_id,
-    status: 'absent',
-    first_check_in: new Date(),
-    session_count: 0,
-    total_worked_minutes: 0,
-    is_anomaly: Number(body.accuracy) > 50,
-  }));
 
   const nextSessionNumber = Number(attendance.session_count || 0) + 1;
   const session = await AttendanceSession.create({
