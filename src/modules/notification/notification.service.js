@@ -35,19 +35,41 @@ async function persistNotifications(orgId, employeeIds, payload) {
 }
 
 async function dispatchPushNow(orgId, employeeIds, payload) {
+  // ✅ FIX: Validate employees belong to org
+  const employees = await Employee.findAll({
+    where: {
+      id: { [Op.in]: employeeIds },
+      org_id: orgId,
+      is_active: true,
+    },
+    attributes: ['id', 'org_id'],
+  });
+
+  if (employees.length !== employeeIds.length) {
+    // Some employees don't belong to this org
+    return {
+      sentCount: 0,
+      failedCount: 0,
+      skipped: true,
+      reason: 'invalid_employees',
+      notificationCount: 0,
+    };
+  }
+
   const tokenRows = await DeviceToken.findAll({
     where: {
       org_id: orgId,
-      emp_id: {
-        [Op.in]: employeeIds,
-      },
+      emp_id: { [Op.in]: employeeIds },
     },
-    attributes: ['id', 'fcm_token'],
+    attributes: ['id', 'fcm_token', 'emp_id', 'org_id'],
     order: [['is_primary', 'DESC'], ['created_at', 'DESC']],
   });
 
+  // ✅ FIX: Validate tokens belong to employees in this org
+  const validTokenRows = tokenRows.filter(t => t.org_id === orgId && employeeIds.includes(t.emp_id));
+
   const seenValues = new Set();
-  const uniqueTokens = tokenRows.filter((tokenRow) => {
+  const uniqueTokens = validTokenRows.filter((tokenRow) => {
     if (seenValues.has(tokenRow.fcm_token)) {
       return false;
     }
