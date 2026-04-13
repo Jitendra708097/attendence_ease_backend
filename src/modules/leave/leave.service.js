@@ -73,6 +73,12 @@ async function getEmployeeForOrg(orgId, empId) {
 
 async function getLeaveBalance(orgId, empId) {
   const employee = await getEmployeeForOrg(orgId, empId);
+  
+  // ✅ FIX: Validate employee belongs to org
+  if (employee.org_id !== orgId && employee.org_id.toString() !== orgId.toString()) {
+    throw createError('HTTP_403', 'Access denied', 403);
+  }
+  
   const balance = normalizeLeaveBalance(employee.leave_balance || {});
   const { start, end } = getCurrentYearRange();
 
@@ -83,6 +89,7 @@ async function getLeaveBalance(orgId, empId) {
       status: 'approved',
       from_date: { [Op.lte]: end },
       to_date: { [Op.gte]: start },
+      deleted_at: null, // ✅ FIX: Respect soft deletes
     },
     attributes: ['leave_type', 'days_count'],
   });
