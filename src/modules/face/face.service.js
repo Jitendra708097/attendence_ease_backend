@@ -108,7 +108,18 @@ async function getEmployeeForOrg(empId, orgId) {
 }
 
 async function verifyFace(empId, orgId, embedding, selfieBuffer) {
+  // ✅ FIX: Validate org context
+  if (!orgId || !empId) {
+    throw createError('FACE_002', 'Organization and employee context required', 422);
+  }
+  
   const employee = await getEmployeeForOrg(empId, orgId);
+  
+  // ✅ FIX: Validate employee belongs to org
+  if (employee.org_id !== orgId && employee.org_id.toString() !== orgId.toString()) {
+    throw createError('FACE_006', 'Employee not found in organization', 404);
+  }
+  
   const normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
   const hasLocalEmbedding =
     Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
