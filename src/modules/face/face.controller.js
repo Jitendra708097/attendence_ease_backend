@@ -64,15 +64,20 @@ async function verify(req, res) {
   }
 
   try {
+    // ✅ FIX: Use logged-in employee, not from request body
     const data = await faceService.verifyFace(
-      req.employee.id,
-      req.org_id,
+      req.employee.id,  // Use authenticated employee
+      req.org_id,       // Use org from middleware
       req.body.faceEmbedding || null,
       faceService.decodeSelfie(req.body.selfieBase64)
     );
 
     return ok(res, data, 'Face verified');
   } catch (error) {
+    // ✅ FIX: Return generic error for 404 to prevent info leakage
+    if (error.statusCode === 404 || error.code === 'FACE_001') {
+      return fail(res, 'FACE_003', 'Face verification failed', [], 401);
+    }
     return fail(res, error.code || 'FACE_003', error.message, error.details || [], error.statusCode || 400);
   }
 }
