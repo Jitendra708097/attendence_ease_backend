@@ -31,17 +31,36 @@ async function createChallenge({ orgId, empId }) {
   };
 }
 
-async function consumeChallenge(token) {
-  const key = getChallengeKey(token);
-  const response = await redisClient.multi().get(key).del(key).exec();
-  const payload = response && response[0] ? response[0][1] : null;
-  const deleted = response && response[1] ? response[1][1] : 0;
-
-  if (!payload || deleted !== 1) {
-    return null;
+async function consumeChallenge(challengeToken, result, req) {
+  if (!challengeToken || typeof challengeToken !== 'string') {
+    throw createError('ATT_013', 'Invalid challenge token format', 422);
   }
 
-  return JSON.parse(payload);
+  const now = new Date();
+  const challenge = await Challenge.findOne({
+    where: {
+      token: challengeToken,
+      consumed: false,
+      expires_at: { [Op.gt]: now },
+    },
+  }, { lock: 'UPDATE' });
+
+  if (!challenge) {
+    throw createError('ATT_013', 'Challenge token invalid, expired, or reused', 401);
+  }
+
+  // Validate challenge matches the result
+  if (challenge.challenge_type !== result.challengeType) {
+    throw createError('ATT_014', 'Challenge type mismatch', 422);
+  }
+
+  // Mark as consumed atomically
+  await challenge.update(
+    { consumed: true, consumed_at: now },
+    { transaction: req.transaction }
+  );
+
+  return challenge;
 }
 
 module.exports = {
