@@ -7,7 +7,13 @@ const billingController = require('./billing.controller');
 
 const router = express.Router();
 
-router.use(authenticate, orgGuard, roleGuard('admin', 'superadmin'));
+// ✅ Middleware: Extract idempotency key from headers
+const idempotencyKeyMiddleware = (req, res, next) => {
+  req.idempotencyKey = req.headers['idempotency-key'] || null;
+  next();
+};
+
+router.use(authenticate, orgGuard, roleGuard('admin', 'superadmin'), idempotencyKeyMiddleware);
 
 router.get('/current-plan', asyncHandler(billingController.currentPlan));
 router.get('/invoices', asyncHandler(billingController.invoices));

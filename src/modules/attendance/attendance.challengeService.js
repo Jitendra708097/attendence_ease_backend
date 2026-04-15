@@ -3,6 +3,14 @@ const { redisClient } = require('../../config/redis');
 
 const CHALLENGES = ['blink', 'turn_left', 'smile'];
 
+function createError(code, message, statusCode, details = []) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  error.details = details;
+  return error;
+}
+
 function getChallengeKey(token) {
   return `attendance_challenge:${token}`;
 }
@@ -31,36 +39,28 @@ async function createChallenge({ orgId, empId }) {
   };
 }
 
-async function consumeChallenge(challengeToken, result, req) {
+async function consumeChallenge(challengeToken) {
   if (!challengeToken || typeof challengeToken !== 'string') {
     throw createError('ATT_013', 'Invalid challenge token format', 422);
   }
 
-  const now = new Date();
-  const challenge = await Challenge.findOne({
-    where: {
-      token: challengeToken,
-      consumed: false,
-      expires_at: { [Op.gt]: now },
-    },
-  }, { lock: 'UPDATE' });
+  const key = getChallengeKey(challengeToken);
+  const challengeData = await redisClient.get(key);
 
-  if (!challenge) {
+  if (!challengeData) {
     throw createError('ATT_013', 'Challenge token invalid, expired, or reused', 401);
   }
 
-  // Validate challenge matches the result
-  if (challenge.challenge_type !== result.challengeType) {
-    throw createError('ATT_014', 'Challenge type mismatch', 422);
+  try {
+    const challenge = JSON.parse(challengeData);
+    
+    // Delete the challenge from Redis to prevent reuse (consume it)
+    await redisClient.del(key);
+    
+    return challenge;
+  } catch (error) {
+    throw createError('ATT_013', 'Challenge token invalid, expired, or reused', 401);
   }
-
-  // Mark as consumed atomically
-  await challenge.update(
-    { consumed: true, consumed_at: now },
-    { transaction: req.transaction }
-  );
-
-  return challenge;
 }
 
 module.exports = {

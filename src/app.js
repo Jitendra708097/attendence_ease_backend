@@ -21,7 +21,7 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl,env.frontend_mobileUrl].filter(Boolean);
+const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl,env.frontend.mobileUrl].filter(Boolean);
 
 morgan.token('request-id', (req) => req.id || '-');
 
@@ -63,13 +63,11 @@ app.use('/api/v1/branches', branchRoutes);
 app.use('/api/v1/employees', employeeRoutes);
 app.use('/api/v1/face', faceRoutes);
 app.use('/api/v1/leave', leaveRoutes);
-app.use('/api/v1/leaves', leaveRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/regularisations', regularisationRoutes);
 app.use('/api/v1/shifts', shiftRoutes);
 app.use('/api/v1/billing', billingRoutes);
 app.use('/api/v1/superadmin', superadminRoutes);
-// app.use('/api/v1/fac',face);
 
 app.use(notFound);
 app.use(errorHandler);

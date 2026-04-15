@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const { Op } = require('sequelize');
 const env = require('../../config/env');
-const { Employee, Organisation } = require('../../models');
+const { sequelize } = require('../../config/database');
+const { Employee, Organisation, PaymentRecord } = require('../../models');
 const { PLAN_PRICES, PLAN_LABELS } = require('../../utils/constants');
 
 function createError(code, message, statusCode, details = []) {
@@ -244,7 +245,7 @@ async function createInvoiceOrder(orgId, invoiceId) {
   };
 }
 
-async function verifyInvoicePayment(orgId, payload) {
+async function verifyInvoicePayment(orgId, payload, idempotencyKey = null) {
   const {
     invoiceId,
     razorpay_order_id: razorpayOrderId,
@@ -256,6 +257,7 @@ async function verifyInvoicePayment(orgId, payload) {
     throw createError('BILLING_008', 'Missing payment verification details', 422);
   }
 
+  // Step 1: Verify Razorpay signature
   const generatedSignature = crypto
     .createHmac('sha256', env.razorpay.secret)
     .update(`${razorpayOrderId}|${razorpayPaymentId}`)
@@ -265,63 +267,163 @@ async function verifyInvoicePayment(orgId, payload) {
     throw createError('BILLING_009', 'Invalid payment signature', 400);
   }
 
-  const { organisation, currentInvoice } = await buildBillingSnapshot(orgId);
+  // ✅ ACID FIX: Use database transaction
+  const transaction = await sequelize.transaction({
+    isolationLevel: sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE,
+  });
 
-  if (currentInvoice.id !== invoiceId) {
-    throw createError('HTTP_404', 'Invoice not found', 404);
-  }
+  try {
+    // Step 2: Check idempotency (if key provided)
+    if (idempotencyKey) {
+      const existingRecord = await PaymentRecord.findOne({
+        where: { idempotency_key: idempotencyKey },
+        transaction,
+      });
 
-  const settings = organisation.settings || {};
-  const billing = settings.billing || { payments: [] };
-  const payments = Array.isArray(billing.payments) ? billing.payments : [];
+      if (existingRecord) {
+        await transaction.commit();
+        return {
+          invoice: normalizeInvoice({
+            invoiceId: existingRecord.invoice_id,
+            amount: Math.round(existingRecord.amount_paise / 100),
+            paidAt: existingRecord.created_at.toISOString(),
+            status: 'paid',
+          }),
+          verified: true,
+          alreadyPaid: true,
+          idempotent: true,
+        };
+      }
+    }
 
-  const existingPayment = payments.find(
-    (payment) =>
-      payment.invoiceId === invoiceId ||
-      payment.razorpayPaymentId === razorpayPaymentId
-  );
+    // Step 3: Check for duplicate Razorpay payment ID
+    const existingByPaymentId = await PaymentRecord.findOne({
+      where: { razorpay_payment_id: razorpayPaymentId },
+      transaction,
+    });
 
-  if (existingPayment) {
-    return {
-      invoice: normalizeInvoice(existingPayment),
-      verified: true,
-      alreadyPaid: true,
+    if (existingByPaymentId) {
+      await transaction.commit();
+      return {
+        invoice: normalizeInvoice({
+          invoiceId: existingByPaymentId.invoice_id,
+          amount: Math.round(existingByPaymentId.amount_paise / 100),
+          paidAt: existingByPaymentId.created_at.toISOString(),
+          status: 'paid',
+        }),
+        verified: true,
+        alreadyPaid: true,
+        duplicate: true,
+      };
+    }
+
+    // Step 4: Build billing snapshot with lock
+    const organisation = await Organisation.findOne({
+      where: { id: orgId },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!organisation) {
+      await transaction.rollback();
+      throw createError('HTTP_404', 'Organisation not found', 404);
+    }
+
+    const { currentInvoice } = await buildBillingSnapshot(orgId);
+
+    if (currentInvoice.id !== invoiceId) {
+      await transaction.rollback();
+      throw createError('HTTP_404', 'Invoice not found', 404);
+    }
+
+    // Step 5: Create payment record (atomic insert)
+    const paymentRecordDb = await PaymentRecord.create(
+      {
+        org_id: orgId,
+        invoice_id: invoiceId,
+        razorpay_order_id: razorpayOrderId,
+        razorpay_payment_id: razorpayPaymentId,
+        razorpay_signature: razorpaySignature,
+        amount_paise: toAmountPaise(currentInvoice.amount),
+        currency: 'INR',
+        status: 'verified',
+        idempotency_key: idempotencyKey,
+      },
+      { transaction }
+    );
+
+    // Step 6: Update organisation settings (legacy support)
+    const settings = organisation.settings || {};
+    const billing = settings.billing || { payments: [] };
+    const payments = Array.isArray(billing.payments) ? billing.payments : [];
+
+    const paymentData = {
+      invoiceId: currentInvoice.id,
+      invoiceNumber: currentInvoice.invoiceNumber,
+      amount: currentInvoice.amount,
+      currency: currentInvoice.currency,
+      date: currentInvoice.date,
+      dueDate: currentInvoice.dueDate,
+      status: 'paid',
+      paidAt: new Date().toISOString(),
+      employeeCount: currentInvoice.employeeCount,
+      plan: currentInvoice.plan,
+      planLabel: currentInvoice.planLabel,
+      period: currentInvoice.period,
+      razorpayOrderId,
+      razorpayPaymentId,
     };
+
+    const nextSettings = {
+      ...settings,
+      billing: {
+        ...billing,
+        payments: [paymentData, ...payments],
+        lastPaymentAt: paymentData.paidAt,
+      },
+    };
+
+    await organisation.update({ settings: nextSettings }, { transaction });
+
+    // ✅ Step 7: Commit transaction (atomic guarantee)
+    await transaction.commit();
+
+    return {
+      invoice: normalizeInvoice(paymentData),
+      paymentRecord: {
+        id: paymentRecordDb.id,
+        razorpayPaymentId: paymentRecordDb.razorpay_payment_id,
+      },
+      verified: true,
+      alreadyPaid: false,
+    };
+  } catch (error) {
+    // ✅ Rollback on ANY error
+    if (transaction) {
+      await transaction.rollback().catch(() => {});
+    }
+
+    if (error.code === 'ER_DUP_ENTRY' || error.name === 'SequelizeUniqueConstraintError') {
+      // Duplicate payment caught at DB level (race condition prevented)
+      const existing = await PaymentRecord.findOne({
+        where: { razorpay_payment_id: razorpayPaymentId },
+      });
+
+      return {
+        invoice: normalizeInvoice({
+          invoiceId: existing?.invoice_id,
+          amount: Math.round(existing?.amount_paise / 100),
+          paidAt: existing?.created_at.toISOString(),
+          status: 'paid',
+        }),
+        verified: true,
+        alreadyPaid: true,
+        dbConstraintCaught: true,
+      };
+    }
+
+    throw error;
   }
-
-  const paymentRecord = {
-    invoiceId: currentInvoice.id,
-    invoiceNumber: currentInvoice.invoiceNumber,
-    amount: currentInvoice.amount,
-    currency: currentInvoice.currency,
-    date: currentInvoice.date,
-    dueDate: currentInvoice.dueDate,
-    status: 'paid',
-    paidAt: new Date().toISOString(),
-    employeeCount: currentInvoice.employeeCount,
-    plan: currentInvoice.plan,
-    planLabel: currentInvoice.planLabel,
-    period: currentInvoice.period,
-    razorpayOrderId,
-    razorpayPaymentId,
-  };
-
-  const nextSettings = {
-    ...settings,
-    billing: {
-      ...billing,
-      payments: [paymentRecord, ...payments],
-      lastPaymentAt: paymentRecord.paidAt,
-    },
-  };
-
-  await organisation.update({ settings: nextSettings });
-
-  return {
-    invoice: normalizeInvoice(paymentRecord),
-    verified: true,
-    alreadyPaid: false,
-  };
 }
 
 async function downloadInvoice(orgId, invoiceId) {

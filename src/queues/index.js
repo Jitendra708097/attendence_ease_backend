@@ -20,18 +20,23 @@ let sharedSubscriber = null;
 function buildRedisClient() {
   const options = buildQueueRedisOptions();
 
-  if (typeof options === 'string') {
-    return new Redis(options, {
-      enableReadyCheck: false,
-      maxRetriesPerRequest: null,
-    });
-  }
+  const client = typeof options === 'string'
+    ? new Redis(options, {
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+      })
+    : new Redis({
+        ...options,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+      });
 
-  return new Redis({
-    ...options,
-    enableReadyCheck: false,
-    maxRetriesPerRequest: null,
-  });
+  // Bull registers one error listener per queue on the shared client.
+  // With 6 queues the default limit of 10 is exceeded — raise it to
+  // the number of queues × 3 to give headroom for future queues.
+  client.setMaxListeners(30);
+
+  return client;
 }
 
 function createQueue(name) {

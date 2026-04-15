@@ -48,6 +48,7 @@ async function issueTokenPair(employee, meta = {}) {
 }
 
 async function login({ email, password, deviceId }) {
+  console.log("Email: ",email, "password: ",password);
   const employee = await Employee.findOne({
     where: {
       email: String(email).trim().toLowerCase(),
@@ -63,15 +64,18 @@ async function login({ email, password, deviceId }) {
     ],
   });
 
+  console.log("employee: ",employee);
   if (!employee || !employee.password_hash) {
     const error = new Error('Invalid credentials');
     error.code = 'AUTH_001';
     error.statusCode = 401;
     throw error;
   }
-
+ console.log("Hello");
+ console.log("hash: ",employee.password_hash);
+ console.log("password: ",password);
   const isPasswordValid = await compareValue(password, employee.password_hash);
-
+console.log("isPassword: ",isPasswordValid);
   if (!isPasswordValid) {
     const error = new Error('Invalid credentials');
     error.code = 'AUTH_001';
@@ -90,10 +94,18 @@ async function login({ email, password, deviceId }) {
 async function refresh(refreshToken) {
   const payload = verifyRefreshToken(refreshToken);
 
+  // ✅ FIX: Require orgId for multi-tenant isolation
+  if (!payload.id || !payload.orgId) {
+    const error = new Error('Invalid refresh token');
+    error.code = 'AUTH_002';
+    error.statusCode = 401;
+    throw error;
+  }
+
   const employee = await Employee.findOne({
     where: {
       id: payload.id,
-      ...(payload.orgId ? { org_id: payload.orgId } : {}),
+      org_id: payload.orgId, // ✅ Always enforce org_id
     },
   });
 

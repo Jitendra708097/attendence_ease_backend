@@ -17,7 +17,11 @@ async function createOrder(req, res) {
 }
 
 async function verifyPayment(req, res) {
-  const data = await billingService.verifyInvoicePayment(req.org_id, req.body || {});
+  const data = await billingService.verifyInvoicePayment(
+    req.org_id,
+    req.body || {},
+    req.idempotencyKey
+  );
   return ok(res, data, 'Payment verified');
 }
 

@@ -28,7 +28,7 @@ async function startServer() {
 
   registerQueues();
 
-  server = app.listen(env.port, () => {
+  server = app.listen(env.port,'0.0.0.0', () => {
     console.log(`[bootstrap] Server listening on port ${env.port}`);
   });
 

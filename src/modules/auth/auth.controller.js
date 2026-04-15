@@ -9,6 +9,7 @@ const {
 
 async function login(req, res) {
   const details = validateLoginPayload(req.body);
+  console.log("credentail: ",req.body);
 
   if (details.length > 0) {
     return fail(res, 'AUTH_005', 'Invalid login payload', details, 422);
@@ -16,6 +17,7 @@ async function login(req, res) {
 
   try {
     const data = await authService.login(req.body);
+    console.log("data: ",data);
     return ok(res, data, 'Login successful');
   } catch (error) {
     return fail(res, error.code || 'AUTH_001', error.message, [], error.statusCode || 401);
