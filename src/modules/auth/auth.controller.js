@@ -5,11 +5,12 @@ const {
   validateLoginPayload,
   validateRefreshPayload,
   validateChangePasswordPayload,
+  validateForgotPasswordPayload,
+  validateResetPasswordPayload,
 } = require('./auth.validators');
 
 async function login(req, res) {
   const details = validateLoginPayload(req.body);
-  console.log("credentail: ",req.body);
 
   if (details.length > 0) {
     return fail(res, 'AUTH_005', 'Invalid login payload', details, 422);
@@ -17,7 +18,6 @@ async function login(req, res) {
 
   try {
     const data = await authService.login(req.body);
-    console.log("data: ",data);
     return ok(res, data, 'Login successful');
   } catch (error) {
     return fail(res, error.code || 'AUTH_001', error.message, [], error.statusCode || 401);
@@ -75,9 +75,49 @@ async function changePassword(req, res) {
   }
 }
 
+async function forgotPassword(req, res) {
+  const details = validateForgotPasswordPayload(req.body);
+
+  if (details.length > 0) {
+    return fail(res, 'AUTH_012', 'Invalid forgot password payload', details, 422);
+  }
+
+  try {
+    const data = await authService.forgotPassword({
+      email: req.body.email,
+    });
+
+    return ok(res, data, 'If the account exists, an OTP has been sent');
+  } catch (error) {
+    return fail(res, error.code || 'AUTH_015', error.message, [], error.statusCode || 400);
+  }
+}
+
+async function resetPassword(req, res) {
+  const details = validateResetPasswordPayload(req.body);
+
+  if (details.length > 0) {
+    return fail(res, 'AUTH_013', 'Invalid reset password payload', details, 422);
+  }
+
+  try {
+    const data = await authService.resetPassword({
+      email: req.body.email,
+      otp: req.body.otp,
+      newPassword: req.body.newPassword,
+    });
+
+    return ok(res, data, 'Password reset successful');
+  } catch (error) {
+    return fail(res, error.code || 'AUTH_014', error.message, [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   login,
   refresh,
   logout,
   changePassword,
+  forgotPassword,
+  resetPassword,
 };

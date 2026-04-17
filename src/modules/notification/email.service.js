@@ -60,6 +60,41 @@ function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, temp
   };
 }
 
+function buildPasswordResetOtpEmail({ organisationName, employeeName, otp, expiresInMinutes }) {
+  const greeting = `We received a request to reset your ${organisationName} password.`;
+
+  return {
+    subject: `${organisationName} password reset code`,
+    text: [
+      `Hello ${employeeName},`,
+      '',
+      greeting,
+      '',
+      `Your verification code is: ${otp}`,
+      `This code will expire in ${expiresInMinutes} minutes.`,
+      '',
+      'If you did not request a password reset, you can ignore this email.',
+      '',
+      `Regards,`,
+      `${organisationName} Team`,
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+        <p>Hello ${employeeName},</p>
+        <p>${greeting}</p>
+        <p style="margin: 24px 0;">
+          <span style="display: inline-block; font-size: 28px; letter-spacing: 8px; font-weight: 700; color: #0d7377;">
+            ${otp}
+          </span>
+        </p>
+        <p>This code will expire in <strong>${expiresInMinutes} minutes</strong>.</p>
+        <p>If you did not request a password reset, you can ignore this email.</p>
+        <p>Regards,<br />${organisationName} Team</p>
+      </div>
+    `,
+  };
+}
+
 async function sendWelcomeEmployeeEmail({ to, organisationName, employeeName, employeeEmail, tempPassword }) {
   const mailTransporter = getTransporter();
 
@@ -93,7 +128,41 @@ async function sendWelcomeEmployeeEmail({ to, organisationName, employeeName, em
   };
 }
 
+async function sendPasswordResetOtpEmail({ to, organisationName, employeeName, otp, expiresInMinutes }) {
+  const mailTransporter = getTransporter();
+
+  if (!mailTransporter) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: 'smtp_not_configured',
+    };
+  }
+
+  const emailContent = buildPasswordResetOtpEmail({
+    organisationName,
+    employeeName,
+    otp,
+    expiresInMinutes,
+  });
+
+  const info = await mailTransporter.sendMail({
+    from: env.smtp.from,
+    to,
+    subject: emailContent.subject,
+    text: emailContent.text,
+    html: emailContent.html,
+  });
+
+  return {
+    sent: true,
+    skipped: false,
+    messageId: info.messageId,
+  };
+}
+
 module.exports = {
   isEmailConfigured,
   sendWelcomeEmployeeEmail,
+  sendPasswordResetOtpEmail,
 };

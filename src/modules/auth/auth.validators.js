@@ -36,8 +36,38 @@ function validateChangePasswordPayload(body = {}) {
   return details;
 }
 
+function validateForgotPasswordPayload(body = {}) {
+  const details = [];
+
+  if (!body.email) {
+    details.push({ field: 'email', message: 'Email is required' });
+  }
+
+  return details;
+}
+
+function validateResetPasswordPayload(body = {}) {
+  const details = [];
+
+  if (!body.email) {
+    details.push({ field: 'email', message: 'Email is required' });
+  }
+
+  if (!body.otp || !/^\d{6}$/.test(String(body.otp).trim())) {
+    details.push({ field: 'otp', message: 'OTP must be a 6-digit code' });
+  }
+
+  if (!body.newPassword || String(body.newPassword).length < 8) {
+    details.push({ field: 'newPassword', message: 'New password must be at least 8 characters' });
+  }
+
+  return details;
+}
+
 module.exports = {
   validateLoginPayload,
   validateRefreshPayload,
   validateChangePasswordPayload,
+  validateForgotPasswordPayload,
+  validateResetPasswordPayload,
 };

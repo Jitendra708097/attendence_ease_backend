@@ -299,6 +299,7 @@ async function processEnrollmentJob(jobData) {
   await employee.update({
     face_embedding_local: normalizedEmbedding,
     face_embedding_id: faceId,
+    face_enrolled_at: new Date(),
   });
 
   await safeRedisSet(
@@ -330,7 +331,9 @@ async function getEnrollmentStatus({ requester, orgId, empId }) {
   const employee = await getEmployeeForOrg(empId, orgId);
   const redisStatus = await safeRedisGet(getEnrollmentStatusKey(orgId, empId));
   const parsedStatus = redisStatus ? JSON.parse(redisStatus) : null;
-  const isEnrolled = Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
+  const hasLocalEmbedding =
+    Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
+  const isEnrolled = Boolean(employee.face_embedding_id || hasLocalEmbedding);
 
   return {
     employeeId: employee.id,

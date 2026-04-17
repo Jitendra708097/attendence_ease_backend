@@ -66,6 +66,9 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
+      password_reset_otp_hash: DataTypes.STRING,
+      password_reset_expires_at: DataTypes.DATE,
+      password_reset_requested_at: DataTypes.DATE,
     },
     {
       tableName: 'employees',

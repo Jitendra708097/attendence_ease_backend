@@ -297,7 +297,7 @@ async function checkIn({ orgId, empId, body, req }) {
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   validateGpsPayload(body);
 
-  if (!branch.is_remote && Array.isArray(branch.geo_fence_polygons) && branch.geo_fence_polygons.length >= 3) {
+  if (!branch.is_remote) {
     const isInside = checkGeofence({ lat: Number(body.lat), lng: Number(body.lng) }, branch);
     if (!isInside) {
       throw createError('GEO_003', 'Employee is outside the branch geofence', 400);
@@ -354,6 +354,7 @@ async function checkIn({ orgId, empId, body, req }) {
   await attendance.update({
     session_count: nextSessionNumber,
     first_check_in: attendance.first_check_in || session.check_in_time,
+    status: 'present',
     is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50,
   });
 
