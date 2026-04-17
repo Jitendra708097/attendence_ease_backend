@@ -315,7 +315,6 @@ async function forgotPassword({ email }) {
   }
 
   const otp = generateOtp();
-  console.log("OTP: ",otp);
   const passwordResetOtpHash = await hashValue(otp);
   const passwordResetExpiresAt = getPasswordResetExpiryDate();
 
