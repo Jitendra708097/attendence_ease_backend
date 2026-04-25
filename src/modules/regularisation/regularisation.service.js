@@ -2,11 +2,12 @@ const { Op } = require('sequelize');
 const {
   Attendance,
   Employee,
+  Organisation,
   Regularisation,
   Shift,
 } = require('../../models');
 const { computeAttendanceStatus } = require('../attendance/attendance.statusEngine');
-const { sendPush } = require('../notification/notification.service');
+const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -184,6 +185,20 @@ async function createRegularisation({ orgId, empId, body }) {
     ],
   });
 
+  await notifyOrgRoles(
+    orgId,
+    ['admin'],
+    {
+      type: 'regularisation_submitted',
+      title: 'New regularisation request',
+      body: `${hydrated.employee ? hydrated.employee.name : 'An employee'} submitted a regularisation request for ${date}.`,
+      actionUrl: '/regularisations',
+    },
+    {
+      excludeEmployeeIds: [empId],
+    }
+  );
+
   return toDto(hydrated);
 }
 
@@ -231,31 +246,17 @@ async function listPendingRegularisations({ orgId, role, employeeId, query = {} 
 }
 
 async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, date) {
-  const approvers = await Employee.findAll({
-    where: {
-      org_id: orgId,
-      is_active: true,
-      role: {
-        [Op.in]: ['admin'],
-      },
-      id: {
-        [Op.ne]: excludeEmployeeId,
-      },
-    },
-    attributes: ['id'],
-  });
-
-  if (approvers.length === 0) {
-    return;
-  }
-
-  await sendPush(
-    approvers.map((row) => row.id),
+  await notifyOrgRoles(
+    orgId,
+    ['admin'],
     {
       type: 'general',
       title: 'Regularisation awaiting approval',
       body: `${employeeName || 'An employee'} regularisation for ${date} is ready for final review.`,
       actionUrl: '/regularisations',
+    },
+    {
+      excludeEmployeeIds: [excludeEmployeeId],
     }
   );
 }
@@ -339,6 +340,13 @@ async function approveRegularisation({ orgId, regularisationId, approverId }) {
     throw createError('HTTP_404', 'Shift configuration not found', 404);
   }
 
+  const organisation = await Organisation.findOne({
+    where: {
+      id: orgId,
+    },
+    attributes: ['timezone'],
+  });
+
   const nextCheckIn = record.requested_check_in || attendance.first_check_in;
   const nextCheckOut = record.requested_check_out || attendance.last_check_out;
   const totalWorkedMinutes = diffMinutes(
@@ -350,10 +358,12 @@ async function approveRegularisation({ orgId, regularisationId, approverId }) {
     {
       date: attendance.date,
       first_check_in: nextCheckIn,
+      last_check_out: nextCheckOut,
       total_worked_minutes: totalWorkedMinutes || attendance.total_worked_minutes || 0,
     },
     shift,
-    null
+    null,
+    organisation.timezone || 'UTC'
   );
 
   await attendance.update({
@@ -362,11 +372,16 @@ async function approveRegularisation({ orgId, regularisationId, approverId }) {
     total_worked_minutes: totalWorkedMinutes || attendance.total_worked_minutes || 0,
     status: statusState.status,
     is_late: statusState.isLate,
+    late_by_minutes: statusState.lateByMinutes || 0,
     is_overtime: statusState.isOvertime,
     overtime_minutes: statusState.overtimeMinutes,
+    is_early_checkout: statusState.isEarlyCheckout,
+    early_by_minutes: statusState.earlyByMinutes || 0,
+    check_out_type: statusState.checkOutType,
     is_manual: true,
     is_finalised: Boolean(nextCheckOut),
     marked_by: approverId,
+    source: 'regularisation',
   });
 
   await record.update({

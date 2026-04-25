@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const { Employee, LeaveRequest } = require('../../models');
-const { sendPush } = require('../notification/notification.service');
+const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
 
 const DEFAULT_BALANCE_TYPES = ['annual', 'sick', 'casual', 'earned', 'optional'];
 
@@ -182,6 +182,20 @@ async function createLeaveRequest({ orgId, empId, body }) {
     reason,
     status: 'pending',
   });
+
+  await notifyOrgRoles(
+    orgId,
+    ['admin'],
+    {
+      type: 'leave_request_submitted',
+      title: 'New leave request',
+      body: `${employee.name} requested ${leave.leave_type} leave from ${leave.from_date} to ${leave.to_date}.`,
+      actionUrl: '/leaves',
+    },
+    {
+      excludeEmployeeIds: [empId],
+    }
+  );
 
   return mapLeaveRequest(leave);
 }

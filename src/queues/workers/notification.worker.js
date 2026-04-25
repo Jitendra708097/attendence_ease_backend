@@ -8,11 +8,15 @@ async function processDirectNotification(job) {
 }
 
 async function processShiftReminder(job) {
-  return notificationService.processSendPushJob(job.data);
+  return notificationService.processShiftReminderJob(job.data);
 }
 
 async function processWelcomeEmail(job) {
   return notificationService.processSendWelcomeEmailJob(job.data);
+}
+
+async function processBillingAlertEmail(job) {
+  return notificationService.processSendBillingAlertEmailJob(job.data);
 }
 
 function registerNotificationWorker() {
@@ -23,6 +27,7 @@ function registerNotificationWorker() {
   notification.process('send_push', processDirectNotification);
   notification.process('shift_reminder', processShiftReminder);
   notification.process('send_welcome_email', processWelcomeEmail);
+  notification.process('send_billing_alert_email', processBillingAlertEmail);
   notification.on('failed', (job, error) => {
     console.error('[queue:notification] Job failed:', {
       jobId: job && job.id ? job.id : null,

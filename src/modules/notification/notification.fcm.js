@@ -4,20 +4,30 @@ let firebaseAdmin;
 let firebaseApp;
 
 function parseServiceAccount() {
-  const rawValue = env.firebase && env.firebase.serviceAccountJson
-    ? env.firebase.serviceAccountJson
-    : null;
-
-  if (!rawValue) {
+  if (!env.firebase) {
     return null;
   }
 
-  try {
-    return JSON.parse(rawValue);
-  } catch (error) {
-    console.error('[notification:fcm] Invalid FIREBASE_SERVICE_ACCOUNT_JSON:', error.message);
-    return null;
+  if (env.firebase.serviceAccountJson) {
+    try {
+      return JSON.parse(env.firebase.serviceAccountJson);
+    } catch (error) {
+      console.error('[notification:fcm] Invalid FIREBASE_SERVICE_ACCOUNT_JSON:', error.message);
+      return null;
+    }
   }
+
+  if (env.firebase.projectId && env.firebase.privateKey && env.firebase.clientEmail) {
+    return {
+      project_id: env.firebase.projectId,
+      private_key: env.firebase.privateKey,
+      client_email: env.firebase.clientEmail,
+      private_key_id: env.firebase.privateKeyId || undefined,
+      client_id: env.firebase.clientId || undefined,
+    };
+  }
+
+  return null;
 }
 
 function getFirebaseAdmin() {

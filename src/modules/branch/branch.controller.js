@@ -101,6 +101,28 @@ async function deleteBranch(req, res) {
   }
 }
 
+/**
+ * Get current employee's branch geofence
+ * Used by mobile app to fetch premise boundary polygon
+ */
+async function getCurrentBranchGeofence(req, res) {
+  try {
+    const employee = req.employee;
+    if (!employee?.branch_id) {
+      return fail(res, 'BRANCH_010', 'Employee has no assigned branch', [], 404);
+    }
+
+    const branch = await branchService.getBranchById(req.org_id, employee.branch_id);
+    if (!branch) {
+      return fail(res, 'BRANCH_011', 'Branch not found', [], 404);
+    }
+
+    return ok(res, branch, 'Current branch geofence fetched');
+  } catch (error) {
+    return fail(res, error.code || 'BRANCH_012', error.message, [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   listBranches,
   getBranch,
@@ -109,4 +131,5 @@ module.exports = {
   getGeofence,
   updateGeofence,
   deleteBranch,
+  getCurrentBranchGeofence,
 };

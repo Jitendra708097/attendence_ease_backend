@@ -94,7 +94,12 @@ const env = {
     apiSecret: readEnv('CLOUDINARY_API_SECRET', ''),
   },
   firebase: {
-    serviceAccountJson: parseJson(readEnv('FIREBASE_SERVICE_ACCOUNT_JSON', '{}'), {}),
+    serviceAccountJson: readEnv('FIREBASE_SERVICE_ACCOUNT_JSON'),
+    projectId: readEnv('FIREBASE_PROJECT_ID', ''),
+    privateKey: readEnv('FIREBASE_PRIVATE_KEY', '').replace(/\\n/g, '\n'),
+    clientEmail: readEnv('FIREBASE_CLIENT_EMAIL', ''),
+    privateKeyId: readEnv('FIREBASE_PRIVATE_KEY_ID', ''),
+    clientId: readEnv('FIREBASE_CLIENT_ID', ''),
   },
   googleMapsApiKey: readEnv('GOOGLE_MAPS_API_KEY', ''),
   frontend: {

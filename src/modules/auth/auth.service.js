@@ -18,6 +18,7 @@ function buildEmployeeProfile(employee) {
     phone: employee.phone || null,
     role: employee.role,
     orgId: employee.org_id,
+    branchId: employee.branch_id || null,
     employeeCode: employee.emp_code || null,
     department: employee.department?.name || null,
     shiftName: employee.shift?.name || null,
@@ -38,6 +39,7 @@ async function issueTokenPair(employee, meta = {}) {
     id: employee.id,
     orgId: employee.org_id,
     role: employee.role,
+    branchId: employee.branch_id || null,
   };
 
   const accessToken = signAccessToken(payload);
@@ -58,11 +60,32 @@ async function issueTokenPair(employee, meta = {}) {
   };
 }
 
+async function revokeSessionsForOtherDevices(employeeId, deviceId) {
+  const where = {
+    emp_id: employeeId,
+    status: {
+      [Op.in]: ['active', 'used'],
+    },
+  };
+
+  if (deviceId) {
+    where.device_id = {
+      [Op.ne]: deviceId,
+    };
+  }
+
+  await RefreshToken.update(
+    { status: 'revoked' },
+    { where }
+  );
+}
+
 async function login({ email, password, deviceId }) {
   const employee = await Employee.findOne({
     attributes: [
       'id',
       'org_id',
+      'branch_id',
       'name',
       'email',
       'phone',
@@ -122,6 +145,7 @@ async function login({ email, password, deviceId }) {
     throw error;
   }
 
+  await revokeSessionsForOtherDevices(employee.id, deviceId || null);
   const tokens = await issueTokenPair(employee, { deviceId });
 
   return {
@@ -416,11 +440,4 @@ async function resetPassword({ email, otp, newPassword }) {
   };
 }
 
-module.exports = {
-  login,
-  refresh,
-  logout,
-  changePassword,
-  forgotPassword,
-  resetPassword,
-};
+module.exports = { login, refresh, logout, changePassword, forgotPassword, resetPassword };

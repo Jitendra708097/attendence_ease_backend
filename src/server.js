@@ -26,7 +26,11 @@ async function startServer() {
     throw new Error('Failed to connect to required external services');
   }
 
-  registerQueues();
+  if (connectionResults[1].status === 'fulfilled') {
+    registerQueues();
+  } else {
+    console.warn('[bootstrap] Queue registration skipped because Redis is unavailable');
+  }
 
   server = app.listen(env.port,'0.0.0.0', () => {
     console.log(`[bootstrap] Server listening on port ${env.port}`);

@@ -4,6 +4,9 @@ const { redisClient } = require('../../config/redis');
 const { faceEnrollment } = require('../../queues');
 const { compareEmbeddings, isValidEmbedding, normalizeEmbedding } = require('./face.localModel');
 const { verifyWithRekognition, enrollWithRekognition, deleteFromRekognition } = require('./face.cloudService');
+const { generateFaceEmbedding } = require('./face.tensorflowService');
+const { uploadEnrollmentSelfie, deleteEnrollmentSelfie } = require('./face.storageService');
+const { sendPush } = require('../notification/notification.service');
 
 const THRESHOLDS = {
   probationary: 0.88,
@@ -120,7 +123,7 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
     throw createError('FACE_006', 'Employee not found in organization', 404);
   }
   
-  const normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
+  let normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
   const hasLocalEmbedding =
     Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
   const threshold = getThreshold(employee);
@@ -139,18 +142,23 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
     throw createError('FACE_002', 'Invalid face embedding payload', 422);
   }
 
+  if (!normalizedEmbedding && hasLocalEmbedding && Buffer.isBuffer(selfieBuffer)) {
+    try {
+      const generated = await generateFaceEmbedding(selfieBuffer);
+      normalizedEmbedding = normalizeEmbedding(generated.embedding);
+    } catch (error) {
+      if (!employee.face_embedding_id) {
+        throw createError(error.code || 'FACE_004', error.message, error.statusCode || 422);
+      }
+    }
+  }
+
   if (normalizedEmbedding) {
     const embeddingHash = crypto.createHash('sha256').update(JSON.stringify(normalizedEmbedding)).digest('hex');
     const existingDedup = await safeRedisGet(dedupKey);
 
     if (existingDedup && existingDedup === embeddingHash) {
       return { verified: true, source: 'dedup_cache', threshold, score: 1 };
-    }
-
-    const existingSession = await safeRedisGet(sessionKey);
-
-    if (existingSession) {
-      return { verified: true, source: 'session_cache', threshold, score: 1 };
     }
 
     if (hasLocalEmbedding) {
@@ -221,6 +229,14 @@ async function enqueueEnrollment({ orgId, empId, embedding, selfieBase64 }) {
   const employee = await getEmployeeForOrg(empId, orgId);
   const normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
   const jobId = `face_enrollment_${orgId}_${empId}`;
+  const alreadyEnrolled = Boolean(
+    employee.face_embedding_id ||
+      (Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128)
+  );
+
+  if (alreadyEnrolled) {
+    throw createError('FACE_005', 'Face is already enrolled. Ask an admin to reset it before enrolling again.', 409);
+  }
 
   if (normalizedEmbedding && !isValidEmbedding(normalizedEmbedding)) {
     throw createError('FACE_002', 'Invalid face embedding payload', 422);
@@ -258,24 +274,46 @@ async function enqueueEnrollment({ orgId, empId, embedding, selfieBase64 }) {
     }
   }
 
-  await faceEnrollment.add(
-    'face_enrollment',
-    {
-      orgId,
-      empId,
-      embedding: normalizedEmbedding,
-      selfieBase64,
-    },
-    {
-      jobId,
-      removeOnComplete: true,
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 1000,
-      },
-    }
-  );
+  const jobPayload = {
+    orgId,
+    empId,
+    embedding: normalizedEmbedding,
+    selfieBase64,
+  };
+
+  if (redisClient.status !== 'ready' && redisClient.status !== 'connect') {
+    await processEnrollmentJob(jobPayload);
+    return {
+      employeeId: employee.id,
+      status: 'enrolled',
+      enrolled: true,
+      processedInline: true,
+    };
+  }
+
+  try {
+    await faceEnrollment.add(
+      'face_enrollment',
+      jobPayload,
+      {
+        jobId,
+        removeOnComplete: true,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      }
+    );
+  } catch (error) {
+    await processEnrollmentJob(jobPayload);
+    return {
+      employeeId: employee.id,
+      status: 'enrolled',
+      enrolled: true,
+      processedInline: true,
+    };
+  }
 
   return {
     employeeId: employee.id,
@@ -286,20 +324,43 @@ async function enqueueEnrollment({ orgId, empId, embedding, selfieBase64 }) {
 async function processEnrollmentJob(jobData) {
   const { orgId, empId, embedding, selfieBase64 } = jobData;
   const employee = await getEmployeeForOrg(empId, orgId);
-  const normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
+  const providedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
   const selfieBuffer = decodeSelfie(selfieBase64);
   const statusKey = getEnrollmentStatusKey(orgId, empId);
 
-  if ((normalizedEmbedding && !isValidEmbedding(normalizedEmbedding)) || !selfieBuffer) {
+  if ((providedEmbedding && !isValidEmbedding(providedEmbedding)) || !selfieBuffer) {
     throw createError('FACE_005', 'Enrollment job payload is invalid', 422);
   }
 
+  const uploadedSelfie = await uploadEnrollmentSelfie(selfieBuffer, orgId, empId);
+  let generatedEmbedding = null;
+
+  try {
+    const tfEmbedding = await generateFaceEmbedding(selfieBuffer);
+    generatedEmbedding = normalizeEmbedding(tfEmbedding.embedding);
+  } catch (error) {
+    if (!providedEmbedding) {
+      throw createError(error.code || 'FACE_005', error.message, error.statusCode || 422);
+    }
+  }
+
   const faceId = await enrollWithRekognition(empId, selfieBuffer);
+  const resolvedEmbedding = generatedEmbedding || providedEmbedding;
+  const hasStoredLocalEmbedding = Array.isArray(resolvedEmbedding) && resolvedEmbedding.length === 128;
+
+  if (!hasStoredLocalEmbedding && !faceId) {
+    throw createError(
+      'FACE_005',
+      'Face enrollment could not store a usable verifier. Configure Rekognition or provide a local embedding.',
+      422
+    );
+  }
 
   await employee.update({
-    face_embedding_local: normalizedEmbedding,
+    face_embedding_local: resolvedEmbedding,
     face_embedding_id: faceId,
     face_enrolled_at: new Date(),
+    is_face_enrolled: true,
   });
 
   await safeRedisSet(
@@ -307,14 +368,31 @@ async function processEnrollmentJob(jobData) {
     JSON.stringify({
       status: 'enrolled',
       updatedAt: new Date().toISOString(),
+      cloudinaryUploaded: Boolean(uploadedSelfie),
+      localEmbeddingSource: generatedEmbedding ? 'tfjs_backend' : providedEmbedding ? 'client' : null,
     }),
     24 * 60 * 60
+  );
+
+  if (uploadedSelfie && uploadedSelfie.publicId) {
+    await deleteEnrollmentSelfie(uploadedSelfie.publicId);
+  }
+
+  await sendPush(
+    [empId],
+    {
+      type: 'face_enrollment_complete',
+      title: 'Face recognition setup complete',
+      body: 'Face recognition setup complete. You can now use face verification for attendance.',
+      actionUrl: '/home',
+    }
   );
 
   return {
     employeeId: empId,
     enrolled: true,
     providerFaceId: faceId,
+    localEmbeddingSource: generatedEmbedding ? 'tfjs_backend' : providedEmbedding ? 'client' : null,
   };
 }
 
@@ -333,13 +411,14 @@ async function getEnrollmentStatus({ requester, orgId, empId }) {
   const parsedStatus = redisStatus ? JSON.parse(redisStatus) : null;
   const hasLocalEmbedding =
     Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
-  const isEnrolled = Boolean(employee.face_embedding_id || hasLocalEmbedding);
+  const isEnrolled = Boolean(employee.is_face_enrolled || employee.face_embedding_id || hasLocalEmbedding);
 
   return {
     employeeId: employee.id,
     enrolled: isEnrolled,
     status: isEnrolled ? 'enrolled' : parsedStatus ? parsedStatus.status : 'not_enrolled',
     faceId: employee.face_embedding_id || null,
+    localEmbeddingAvailable: hasLocalEmbedding,
     updatedAt: parsedStatus ? parsedStatus.updatedAt : null,
   };
 }
@@ -354,6 +433,8 @@ async function resetEnrollment({ orgId, empId }) {
   await employee.update({
     face_embedding_local: null,
     face_embedding_id: null,
+    face_enrolled_at: null,
+    is_face_enrolled: false,
   });
 
   await safeRedisDel(

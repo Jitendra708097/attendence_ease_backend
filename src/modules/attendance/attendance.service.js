@@ -1,17 +1,5 @@
 const { Op } = require('sequelize');
-const {
-  Attendance,
-  AttendanceSession,
-  AuditLog,
-  Branch,
-  DeviceException,
-  DeviceToken,
-  Employee,
-  LeaveRequest,
-  Organisation,
-  Regularisation,
-  Shift,
-} = require('../../models');
+const { Attendance, AttendanceSession, AuditLog, Branch, DeviceException, DeviceToken, Employee, LeaveRequest, Organisation, Regularisation, Shift } = require('../../models');
 const { redisClient } = require('../../config/redis');
 const { checkoutGrace } = require('../../queues');
 const { log } = require('../../utils/auditLog');
@@ -222,6 +210,12 @@ async function validateDevice({ orgId, employee, deviceId, useDeviceException, e
 }
 
 function validateGpsPayload(body) {
+  const latitude = Number(body.lat);
+  const longitude = Number(body.lng);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw createError('GEO_002', 'GPS coordinates are required', 400);
+  }
   if (body.isMocked) {
     throw createError('GEO_001', 'Mock location detected', 400);
   }
@@ -243,6 +237,45 @@ function buildShiftInfo(shift) {
     startTime: shift.start_time,
     endTime: shift.end_time,
   };
+}
+
+function normalizeFaceMatch(result) {
+  if (!result || !result.verified) {
+    return {
+      faceMatchScore: null,
+      faceMatchSource: null,
+    };
+  }
+
+  const provider = String(result.source || '').toLowerCase();
+  const source = provider === 'rekognition' ? 'aws' : 'local';
+  const rawScore =
+    typeof result.score === 'number' && Number.isFinite(result.score)
+      ? result.score
+      : typeof result.confidence === 'number' && Number.isFinite(result.confidence)
+        ? result.confidence / 100
+        : null;
+
+  return {
+    faceMatchScore:
+      typeof rawScore === 'number' && Number.isFinite(rawScore)
+        ? Number(Math.max(0, Math.min(0.999, rawScore)).toFixed(3))
+        : null,
+    faceMatchSource: source,
+  };
+}
+
+async function validateLocationForBranch(branch, body) {
+  validateGpsPayload(body);
+
+  if (branch.is_remote) {
+    return;
+  }
+
+  const isInside = checkGeofence({ lat: Number(body.lat), lng: Number(body.lng) }, branch);
+  if (!isInside) {
+    throw createError('GEO_003', 'Employee is outside the branch geofence', 400);
+  }
 }
 
 async function getTodayState(orgId, empId) {
@@ -274,7 +307,7 @@ async function getTodayState(orgId, empId) {
   return {
     openSession: openSession ? { id: openSession.id, checkInTime: openSession.check_in_time, status: openSession.status } : null,
     cooldownEndsAt: cooldownEndsAt || null,
-    lastCheckout: undoAvailable ? new Date(Date.now() + 10 * 60 * 1000).toISOString() : null,
+    lastCheckout: lastSession && lastSession.check_out_time ? lastSession.check_out_time : null,
     lastCheckoutId: undoAvailable && lastSession ? lastSession.id : null,
     todayStatus: attendance.status,
     totalWorkedMins: attendance.total_worked_minutes || 0,
@@ -295,16 +328,15 @@ async function checkIn({ orgId, empId, body, req }) {
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
-  validateGpsPayload(body);
+  await validateLocationForBranch(branch, body);
 
-  if (!branch.is_remote) {
-    const isInside = checkGeofence({ lat: Number(body.lat), lng: Number(body.lng) }, branch);
-    if (!isInside) {
-      throw createError('GEO_003', 'Employee is outside the branch geofence', 400);
-    }
-  }
-
-  await faceService.verifyFace(empId, orgId, body.faceEmbedding || null, faceService.decodeSelfie(body.selfieBase64));
+  const faceVerification = await faceService.verifyFace(
+    empId,
+    orgId,
+    body.faceEmbedding || null,
+    faceService.decodeSelfie(body.selfieBase64)
+  );
+  const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
   // ✅ FIX: Use findOrCreate to prevent race condition
   const [attendance, created] = await Attendance.findOrCreate({
@@ -316,11 +348,15 @@ async function checkIn({ orgId, empId, body, req }) {
     defaults: {
       branch_id: employee.branch_id,
       shift_id: employee.shift_id,
-      status: 'absent',
+      status: 'not_marked',
       first_check_in: new Date(),
       session_count: 0,
       total_worked_minutes: 0,
       is_anomaly: Number(body.accuracy) > 50,
+      source: 'self',
+      auto_absent_overridden: false,
+      face_match_score: faceMatchScore,
+      face_match_source: faceMatchSource,
     },
   });
 
@@ -356,6 +392,11 @@ async function checkIn({ orgId, empId, body, req }) {
     first_check_in: attendance.first_check_in || session.check_in_time,
     status: 'present',
     is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50,
+    source: 'self',
+    auto_absent_overridden:
+      attendance.status === 'absent' && Number(attendance.session_count || 0) === 0 && !attendance.first_check_in,
+    face_match_score: faceMatchScore,
+    face_match_source: faceMatchSource,
   });
 
   await redisClient.del(getCooldownKey(orgId, empId));
@@ -371,17 +412,37 @@ async function checkIn({ orgId, empId, body, req }) {
 
   return {
     session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
-    attendanceStatus: attendance.status,
+    attendanceStatus: 'present',
     buttonState: 'CHECKED_IN',
   };
 }
 
 async function checkOut({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
-  const { employee, shift } = await getEmployeeContext(orgId, empId);
+  const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
+  await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
+  await validateLocationForBranch(branch, body);
+
+  if (body.challengeToken || body.captureTimestamp) {
+    await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
+  }
+
   const attendance = await getTodayAttendance(orgId, empId, timezone);
   if (!attendance) {
     throw createError('HTTP_404', 'Attendance record not found for today', 404);
+  }
+
+  let faceMatchScore = attendance.face_match_score || null;
+  let faceMatchSource = attendance.face_match_source || null;
+
+  if (body.faceEmbedding || body.selfieBase64) {
+    const faceVerification = await faceService.verifyFace(
+      empId,
+      orgId,
+      body.faceEmbedding || null,
+      faceService.decodeSelfie(body.selfieBase64)
+    );
+    ({ faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification));
   }
 
   const session = await getOpenSession(attendance.id);
@@ -398,34 +459,48 @@ async function checkOut({ orgId, empId, body, req }) {
   const computed = computeAttendanceStatus({
     date: attendance.date,
     first_check_in: attendance.first_check_in,
+    last_check_out: now,
     total_worked_minutes: totalWorkedMinutes,
-  }, shift, null);
+  }, shift, null, timezone);
 
   await attendance.update({
     last_check_out: now,
     total_worked_minutes: totalWorkedMinutes,
     status: computed.status,
     is_late: computed.isLate,
+    late_by_minutes: computed.lateByMinutes || 0,
     is_overtime: computed.isOvertime,
+    overtime_minutes: computed.overtimeMinutes,
+    is_early_checkout: computed.isEarlyCheckout,
+    early_by_minutes: computed.earlyByMinutes || 0,
+    check_out_type: computed.checkOutType,
+    face_match_score: faceMatchScore,
+    face_match_source: faceMatchSource,
     is_finalised: Boolean(body.isFinalCheckout),
   });
 
   const cooldownEndsAt = new Date(now.getTime() + Number(shift.session_cooldown_minutes || 15) * 60 * 1000);
-  await redisClient.set(getCooldownKey(orgId, empId), cooldownEndsAt.toISOString(), 'EX', Number(shift.session_cooldown_minutes || 15) * 60);
+  if (!body.isFinalCheckout) {
+    await redisClient.set(getCooldownKey(orgId, empId), cooldownEndsAt.toISOString(), 'EX', Number(shift.session_cooldown_minutes || 15) * 60);
+  } else {
+    await redisClient.del(getCooldownKey(orgId, empId));
+  }
 
   const undoKey = getUndoKey(orgId, empId, session.id);
   await redisClient.set(undoKey, '1', 'EX', 10 * 60);
 
+  const checkoutGraceJobId = `checkout_grace_${session.id}`;
   await checkoutGrace.add('checkout_grace_expiry', {
     orgId,
     empId,
     attendanceId: attendance.id,
     sessionId: session.id,
   }, {
-    jobId: `checkout_grace_${session.id}`,
+    jobId: checkoutGraceJobId,
     delay: 10 * 60 * 1000,
     removeOnComplete: true,
   });
+  await attendance.update({ checkout_grace_job_id: checkoutGraceJobId });
 
   await log(req.employee, 'attendance.check_out', { type: 'attendance_session', id: session.id }, null, { workedMinutes }, req);
   await pushLiveFeedEvent(orgId, {
@@ -473,7 +548,15 @@ async function undoCheckout({ orgId, empId, req }) {
 
   const completedSessions = sessions.filter((item) => item.id !== lastSession.id);
   const totalWorkedMinutes = completedSessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
-  await attendance.update({ last_check_out: null, total_worked_minutes: totalWorkedMinutes, is_finalised: false });
+  await attendance.update({
+    last_check_out: null,
+    total_worked_minutes: totalWorkedMinutes,
+    is_finalised: false,
+    is_early_checkout: false,
+    early_by_minutes: 0,
+    check_out_type: null,
+    checkout_grace_job_id: null,
+  });
 
   await redisClient.del(undoKey, getCooldownKey(orgId, empId));
   const undoJob = await checkoutGrace.getJob(`checkout_grace_${lastSession.id}`);
@@ -486,34 +569,72 @@ async function undoCheckout({ orgId, empId, req }) {
 }
 
 async function listAttendance(orgId, query) {
+  const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 100);
+  const offset = (page - 1) * limit;
   const where = { org_id: orgId };
-  if (query.date) where.date = query.date;
-  if (query.status) where.status = query.status;
 
-  const rows = await Attendance.findAll({
+  if (query.date) {
+    where.date = query.date;
+  } else if (query.dateFrom || query.dateTo) {
+    where.date = {};
+
+    if (query.dateFrom) {
+      where.date[Op.gte] = query.dateFrom;
+    }
+
+    if (query.dateTo) {
+      where.date[Op.lte] = query.dateTo;
+    }
+  }
+
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  if (query.branch) {
+    where.branch_id = query.branch;
+  }
+
+  if (query.employeeId) {
+    where.emp_id = query.employeeId;
+  }
+
+  const result = await Attendance.findAndCountAll({
     where,
     include: [{ model: Employee, as: 'employee', attributes: ['id', 'name', 'email'] }],
     order: [['date', 'DESC'], ['created_at', 'DESC']],
-    limit: Math.min(Number(query.limit || 20), 100),
+    limit,
+    offset,
   });
 
-  return rows.map((row) => ({
-    id: row.id,
-    date: row.date,
-    status: row.status,
-    totalWorkedMins: row.total_worked_minutes || 0,
-    sessionsToday: row.session_count || 0,
-    checkInTime: row.first_check_in,
-    checkOutTime: row.last_check_out,
-    workingHours: Number(row.total_worked_minutes || 0) / 60,
-    isLate: Boolean(row.is_late),
-    isAnomaly: Boolean(row.is_anomaly),
-    employee: row.employee ? {
-      id: row.employee.id,
-      name: row.employee.name,
-      email: row.employee.email,
-    } : null,
-  }));
+  return {
+    attendance: result.rows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      status: row.status,
+      totalWorkedMins: row.total_worked_minutes || 0,
+      sessionsToday: row.session_count || 0,
+      checkInTime: row.first_check_in,
+      checkOutTime: row.last_check_out,
+      workingHours: Number(row.total_worked_minutes || 0) / 60,
+      isLate: Boolean(row.is_late),
+      isAnomaly: Boolean(row.is_anomaly),
+      employee: row.employee
+        ? {
+            id: row.employee.id,
+            name: row.employee.name,
+            email: row.employee.email,
+          }
+        : null,
+    })),
+    pagination: {
+      page,
+      limit,
+      count: result.count,
+      totalPages: Math.ceil(result.count / limit) || 1,
+    },
+  };
 }
 
 function getDateRangeDays(days, timezone = 'UTC') {
@@ -799,6 +920,7 @@ async function manualMark({ orgId, id, body, req }) {
     is_manual: true,
     marked_by: req.employee.id,
     total_worked_minutes: Number(body.totalWorkedMins ?? attendance.total_worked_minutes ?? 0),
+    source: 'admin',
   });
 
   await log(req.employee, 'attendance.manual_mark', { type: 'attendance', id: attendance.id }, previous, attendance.toJSON(), req);

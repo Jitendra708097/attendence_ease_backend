@@ -44,6 +44,10 @@ module.exports = (sequelize, DataTypes) => {
       },
       face_embedding_id: DataTypes.STRING,
       face_enrolled_at: DataTypes.DATE,
+      is_face_enrolled: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
       registered_device_id: DataTypes.STRING,
       trust_score: {
         type: DataTypes.ENUM('probationary', 'default', 'trusted', 'flagged'),

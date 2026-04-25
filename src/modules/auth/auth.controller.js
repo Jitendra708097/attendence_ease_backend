@@ -77,6 +77,7 @@ async function changePassword(req, res) {
 
 async function forgotPassword(req, res) {
   const details = validateForgotPasswordPayload(req.body);
+  console.log("detail: ",details);
 
   if (details.length > 0) {
     return fail(res, 'AUTH_012', 'Invalid forgot password payload', details, 422);
@@ -95,7 +96,7 @@ async function forgotPassword(req, res) {
 
 async function resetPassword(req, res) {
   const details = validateResetPasswordPayload(req.body);
-
+  console.log("reset: ",details);
   if (details.length > 0) {
     return fail(res, 'AUTH_013', 'Invalid reset password payload', details, 422);
   }

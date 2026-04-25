@@ -28,8 +28,8 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       status: {
-        type: DataTypes.ENUM('present', 'absent', 'half_day', 'half_day_early', 'on_leave'),
-        defaultValue: 'absent',
+        type: DataTypes.ENUM('present', 'absent', 'half_day', 'half_day_early', 'on_leave', 'holiday', 'weekend', 'not_marked'),
+        defaultValue: 'not_marked',
       },
       first_check_in: DataTypes.DATE,
       last_check_out: DataTypes.DATE,
@@ -45,6 +45,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
+      late_by_minutes: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+      },
       is_overtime: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
@@ -53,6 +57,26 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         defaultValue: 0,
       },
+      is_early_checkout: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      early_by_minutes: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+      },
+      check_out_type: DataTypes.STRING,
+      source: {
+        type: DataTypes.STRING,
+        defaultValue: 'self',
+      },
+      auto_absent_overridden: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      face_match_score: DataTypes.DECIMAL(4, 3),
+      face_match_source: DataTypes.STRING,
+      checkout_grace_job_id: DataTypes.STRING,
       is_finalised: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,

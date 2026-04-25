@@ -1,8 +1,14 @@
 const Redis = require('ioredis');
 const env = require('./env');
 
+// console.log("env: ",env);
+
 const redisOptions = env.redis.url
-  ? env.redis.url
+  ? {
+      url: env.redis.url,
+      lazyConnect: true,
+      maxRetriesPerRequest: null,
+    }
   : {
       host: env.redis.host,
       port: env.redis.port,
@@ -12,7 +18,12 @@ const redisOptions = env.redis.url
       maxRetriesPerRequest: null,
     };
 
-const redisClient = new Redis(redisOptions);
+const redisClient = redisOptions.url
+  ? new Redis(redisOptions.url, {
+      lazyConnect: redisOptions.lazyConnect,
+      maxRetriesPerRequest: redisOptions.maxRetriesPerRequest,
+    })
+  : new Redis(redisOptions);
 
 redisClient.on('error', (error) => {
   console.error('[redis] connection error:', error.message);

@@ -141,7 +141,7 @@ function mapEmployee(employee) {
     departmentName: employee.department?.name || null,
     shiftId: employee.shift_id,
     shiftName: employee.shift?.name || null,
-    faceEnrolled: Boolean(employee.face_embedding_id || employee.face_embedding_local),
+    faceEnrolled: Boolean(employee.is_face_enrolled || employee.face_embedding_id || employee.face_embedding_local),
     requiresPasswordChange: !employee.password_changed,
   };
 }

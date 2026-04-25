@@ -95,6 +95,68 @@ function buildPasswordResetOtpEmail({ organisationName, employeeName, otp, expir
   };
 }
 
+function buildBillingAlertEmail({ organisationName, adminName, alertType, customMessage }) {
+  const alertCopy = {
+    payment_due: {
+      subject: `${organisationName} payment due reminder`,
+      heading: 'Your AttendEase payment is due.',
+    },
+    payment_overdue: {
+      subject: `${organisationName} payment overdue`,
+      heading: 'Your AttendEase payment is overdue.',
+    },
+    payment_failed: {
+      subject: `${organisationName} payment failed`,
+      heading: 'We could not process your AttendEase payment.',
+    },
+    suspension_warning: {
+      subject: `${organisationName} suspension warning`,
+      heading: 'Your AttendEase account is at risk of suspension.',
+    },
+    organisation_suspended: {
+      subject: `${organisationName} account suspended`,
+      heading: 'Your AttendEase account is currently suspended.',
+    },
+    trial_expiring: {
+      subject: `${organisationName} trial ending soon`,
+      heading: 'Your AttendEase trial is ending soon.',
+    },
+  };
+
+  const fallbackCopy = {
+    subject: `${organisationName} billing alert`,
+    heading: 'There is an important billing update for your AttendEase account.',
+  };
+
+  const copy = alertCopy[alertType] || fallbackCopy;
+  const detail = customMessage || 'Please review your organisation billing status in the AttendEase admin portal.';
+
+  return {
+    subject: copy.subject,
+    text: [
+      `Hello ${adminName},`,
+      '',
+      copy.heading,
+      '',
+      detail,
+      '',
+      'If you need help, please contact the AttendEase support team.',
+      '',
+      'Regards,',
+      'AttendEase Team',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+        <p>Hello ${adminName},</p>
+        <p>${copy.heading}</p>
+        <p>${detail}</p>
+        <p>If you need help, please contact the AttendEase support team.</p>
+        <p>Regards,<br />AttendEase Team</p>
+      </div>
+    `,
+  };
+}
+
 async function sendWelcomeEmployeeEmail({ to, organisationName, employeeName, employeeEmail, tempPassword }) {
   const mailTransporter = getTransporter();
 
@@ -161,8 +223,42 @@ async function sendPasswordResetOtpEmail({ to, organisationName, employeeName, o
   };
 }
 
+async function sendOrgAdminBillingAlertEmail({ to, organisationName, adminName, alertType, customMessage }) {
+  const mailTransporter = getTransporter();
+
+  if (!mailTransporter) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: 'smtp_not_configured',
+    };
+  }
+
+  const emailContent = buildBillingAlertEmail({
+    organisationName,
+    adminName,
+    alertType,
+    customMessage,
+  });
+
+  const info = await mailTransporter.sendMail({
+    from: env.smtp.from,
+    to,
+    subject: emailContent.subject,
+    text: emailContent.text,
+    html: emailContent.html,
+  });
+
+  return {
+    sent: true,
+    skipped: false,
+    messageId: info.messageId,
+  };
+}
+
 module.exports = {
   isEmailConfigured,
   sendWelcomeEmployeeEmail,
   sendPasswordResetOtpEmail,
+  sendOrgAdminBillingAlertEmail,
 };

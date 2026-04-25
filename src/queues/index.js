@@ -22,11 +22,13 @@ function buildRedisClient() {
 
   const client = typeof options === 'string'
     ? new Redis(options, {
+        lazyConnect: true,
         enableReadyCheck: false,
         maxRetriesPerRequest: null,
       })
     : new Redis({
         ...options,
+        lazyConnect: true,
         enableReadyCheck: false,
         maxRetriesPerRequest: null,
       });

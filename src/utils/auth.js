@@ -2,15 +2,15 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const env = require('../config/env');
 
-function signAccessToken(payload) {
+function signAccessToken(payload, options = {}) {
   return jwt.sign(payload, env.jwt.accessSecret, {
-    expiresIn: env.jwt.accessExpiry,
+    expiresIn: options.expiresIn || env.jwt.accessExpiry,
   });
 }
 
-function signRefreshToken(payload) {
+function signRefreshToken(payload, options = {}) {
   return jwt.sign(payload, env.jwt.refreshSecret, {
-    expiresIn: env.jwt.refreshExpiry,
+    expiresIn: options.expiresIn || env.jwt.refreshExpiry,
   });
 }
 

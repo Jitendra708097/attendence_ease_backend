@@ -135,11 +135,13 @@ async function processAutoAbsent(job) {
     candidates.map((employee) => ({
       org_id: orgId,
       emp_id: employee.id,
+      branch_id: employee.branch_id,
       shift_id: shiftId,
       date: dateString,
       status: 'absent',
       session_count: 0,
       total_worked_minutes: 0,
+      source: 'auto',
       is_finalised: true,
     })),
     {

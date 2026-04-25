@@ -12,6 +12,6 @@ router.use(authenticate, orgGuard);
 router.post('/enroll', asyncHandler(faceController.enroll));
 router.post('/verify', asyncHandler(faceController.verify));
 router.get('/status/:empId', asyncHandler(faceController.status));
-router.delete('/:empId', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(faceController.remove));
+router.delete('/:empId', roleGuard('admin', 'superadmin'), asyncHandler(faceController.remove));
 
 module.exports = router;

@@ -20,7 +20,7 @@ async function checkIn(req, res) {
     });
     return ok(res, data, 'Check-in successful');
   } catch (error) {
-    return fail(res, error.code || 'ATT_002', error.message, error.details || [], error.statusCode || 400);
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
   }
 }
 
@@ -34,7 +34,7 @@ async function checkOut(req, res) {
     });
     return ok(res, data, 'Check-out successful');
   } catch (error) {
-    return fail(res, error.code || 'ATT_005', error.message, error.details || [], error.statusCode || 400);
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
   }
 }
 
@@ -47,7 +47,7 @@ async function undoCheckout(req, res) {
     });
     return ok(res, data, 'Checkout undone');
   } catch (error) {
-    return fail(res, error.code || 'ATT_006', error.message, error.details || [], error.statusCode || 400);
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
   }
 }
 

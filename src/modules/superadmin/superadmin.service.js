@@ -1,13 +1,31 @@
 const { Op } = require('sequelize');
-const {  AuditLog, Attendance, Branch, Department, Employee, ImpersonationSession, Organisation, RefreshToken, Shift, sequelize } = require('../../models');
+const {  AuditLog, Attendance, Branch, Department, Employee, ImpersonationSession, Organisation, PaymentRecord, RefreshToken, Shift, sequelize } = require('../../models');
 const { compareValue, hashValue, signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/auth');
 const { getPagination } = require('../../utils/pagination');
 const { redisClient } = require('../../config/redis');
+const env = require('../../config/env');
 const queues = require('../../queues');
-const { queueWelcomeEmail } = require('../notification/notification.service');
+const { queueWelcomeEmail, queueBillingAlertEmail } = require('../notification/notification.service');
 const { PLAN_PRICES } = require('../../utils/constants');
 
 const ALLOWED_PLANS = ['trial', 'standard'];
+const BILLING_ALERT_TYPES = [
+  'payment_due',
+  'payment_overdue',
+  'payment_failed',
+  'suspension_warning',
+  'organisation_suspended',
+  'trial_expiring',
+];
+const FEATURE_FLAGS = [
+  'wifi_bssid_verification',
+  'rekognition_liveness',
+  'payroll_webhook',
+  'multi_challenge_liveness',
+  'texture_antispoofing',
+  'ble_beacon_accuracy',
+  'beta_dashboard',
+];
 
 
 function createError(code, message, statusCode, details = []) {
@@ -18,8 +36,102 @@ function createError(code, message, statusCode, details = []) {
   return error;
 }
 
+function getFeatureFlagRedisKey(flagKey) {
+  return `feature_flag:${flagKey}:global`;
+}
+
+function normalizeOrgFeatureSettings(settings = {}) {
+  const currentSettings = settings && typeof settings === 'object' ? settings : {};
+  const featureFlags = currentSettings.featureFlags && typeof currentSettings.featureFlags === 'object'
+    ? currentSettings.featureFlags
+    : {};
+  const overrides = featureFlags.overrides && typeof featureFlags.overrides === 'object'
+    ? featureFlags.overrides
+    : {};
+
+  return {
+    ...currentSettings,
+    featureFlags: {
+      ...featureFlags,
+      overrides: { ...overrides },
+    },
+  };
+}
+
+function startOfUtcWeek(dateInput = new Date()) {
+  const date = new Date(dateInput);
+  date.setUTCHours(0, 0, 0, 0);
+  const day = date.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setUTCDate(date.getUTCDate() + diff);
+  return date;
+}
+
+function addUtcDays(dateInput, days) {
+  const date = new Date(dateInput);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date;
+}
+
+function startOfUtcMonth(dateInput = new Date()) {
+  return new Date(Date.UTC(dateInput.getUTCFullYear(), dateInput.getUTCMonth(), 1));
+}
+
+function addUtcMonths(dateInput, months) {
+  const date = new Date(dateInput);
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+}
+
+function formatWeekLabel(dateInput) {
+  const date = new Date(dateInput);
+  const month = date.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  return `${month} ${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function formatMonthLabel(dateInput) {
+  const date = new Date(dateInput);
+  return date.toISOString().slice(0, 7);
+}
+
+function getOrgMonthlyMrr(org, employeeCount) {
+  return Number(employeeCount || 0) * Number(PLAN_PRICES[org.plan] || 0);
+}
+
+function assertKnownFeatureFlag(flagKey) {
+  if (!FEATURE_FLAGS.includes(flagKey)) {
+    throw createError('SA_028', 'Feature flag not found', 404, [
+      { field: 'key', message: 'Unknown feature flag key' },
+    ]);
+  }
+}
+
+async function getGlobalFeatureFlagState(flagKey) {
+  const rawValue = await redisClient.get(getFeatureFlagRedisKey(flagKey));
+  return rawValue === 'true';
+}
+
+async function setGlobalFeatureFlagState(flagKey, enabled) {
+  await redisClient.set(getFeatureFlagRedisKey(flagKey), String(Boolean(enabled)));
+  return Boolean(enabled);
+}
+
 function getRefreshExpiryDate() {
   return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+}
+
+function buildImpersonationEmployee(admin, org, session, superAdminId) {
+  return {
+    id: admin.id,
+    name: admin.name,
+    email: admin.email,
+    role: 'admin',
+    orgId: org.id,
+    orgName: org.name,
+    isImpersonated: true,
+    impersonatedBy: superAdminId,
+    impersonationSessionId: session.id,
+    impersonationStartedAt: session.started_at,
+  };
 }
 
 function deriveOrgStatus(org) {
@@ -559,6 +671,56 @@ async function getOrgBilling(orgId) {
   };
 }
 
+async function sendBillingAlert({ orgId, alertType, customMessage }) {
+  if (!BILLING_ALERT_TYPES.includes(alertType)) {
+    throw createError('SA_026', 'Invalid billing alert type', 422, [
+      { field: 'alertType', message: 'Unsupported billing alert type' },
+    ]);
+  }
+
+  const [org, admin] = await Promise.all([
+    Organisation.findOne({ where: { id: orgId } }),
+    Employee.findOne({
+      where: {
+        org_id: orgId,
+        role: 'admin',
+        is_active: true,
+      },
+      order: [['created_at', 'ASC']],
+    }),
+  ]);
+
+  if (!org) {
+    throw createError('HTTP_404', 'Organisation not found', 404);
+  }
+
+  if (!admin || !admin.email) {
+    throw createError('SA_027', 'Organisation admin email is unavailable', 422, [
+      { field: 'orgId', message: 'No active admin with email found for this organisation' },
+    ]);
+  }
+
+  const queuedEmail = await queueBillingAlertEmail({
+    email: admin.email,
+    organisationName: org.name,
+    adminName: admin.name,
+    alertType,
+    customMessage,
+  });
+
+  return {
+    queued: Boolean(queuedEmail?.queued),
+    jobId: queuedEmail?.jobId || null,
+    orgId: org.id,
+    orgName: org.name,
+    adminId: admin.id,
+    adminName: admin.name,
+    adminEmail: admin.email,
+    alertType,
+    customMessage: customMessage || null,
+  };
+}
+
 async function suspendOrg({ orgId }) {
   const org = await Organisation.findOne({ where: { id: orgId } });
 
@@ -920,8 +1082,10 @@ async function startImpersonation({ superAdminId, orgId, adminId, reason }) {
     id: targetAdmin.id,
     orgId,
     role: 'admin',
+    isImpersonated: true,
     impersonatedBy: superAdminId,
-  });
+    impersonationSessionId: session.id,
+  }, { expiresIn: '30m' });
 
   return {
     id: session.id,
@@ -931,6 +1095,9 @@ async function startImpersonation({ superAdminId, orgId, adminId, reason }) {
     adminName: targetAdmin.name,
     adminEmail: targetAdmin.email,
     token,
+    adminPortalUrl: env.frontend.adminUrl || null,
+    expiresIn: 1800,
+    employee: buildImpersonationEmployee(targetAdmin, targetOrg, session, superAdminId),
     startedAt: session.started_at,
     reason: session.reason,
   };
@@ -978,8 +1145,11 @@ async function getActiveImpersonation(superAdminId) {
     id: session.id,
     orgId: session.target_org_id,
     orgName: org ? org.name : null,
+    orgSlug: org ? org.slug : null,
+    adminId: admin ? admin.id : null,
     adminName: admin ? admin.name : null,
     adminEmail: admin ? admin.email : null,
+    adminPortalUrl: env.frontend.adminUrl || null,
     startedAt: session.started_at,
     endedAt: session.ended_at,
   };
@@ -1029,6 +1199,544 @@ async function getImpersonationHistory(superAdminId, query = {}) {
   };
 }
 
+async function getAllFeatureFlags() {
+  const orgs = await Organisation.findAll({
+    attributes: ['id', 'name', 'slug', 'settings'],
+    where: {
+      is_active: true,
+    },
+    order: [['name', 'ASC']],
+  });
+
+  const flags = {};
+
+  for (const flagKey of FEATURE_FLAGS) {
+    const globalEnabled = await getGlobalFeatureFlagState(flagKey);
+    const orgOverrides = [];
+
+    for (const org of orgs) {
+      const normalizedSettings = normalizeOrgFeatureSettings(org.settings);
+      const overrideValue = normalizedSettings.featureFlags.overrides?.[flagKey];
+
+      if (typeof overrideValue === 'boolean') {
+        orgOverrides.push({
+          orgId: org.id,
+          orgName: org.name,
+          orgSlug: org.slug,
+          enabled: overrideValue,
+        });
+      }
+    }
+
+    flags[flagKey] = {
+      globalEnabled,
+      orgOverrides,
+    };
+  }
+
+  return { flags };
+}
+
+async function setFeatureFlagGlobal({ flagKey, enabled }) {
+  assertKnownFeatureFlag(flagKey);
+  const globalEnabled = await setGlobalFeatureFlagState(flagKey, enabled);
+
+  return {
+    key: flagKey,
+    globalEnabled,
+  };
+}
+
+async function setFeatureFlagOrgOverride({ flagKey, orgId, enabled }) {
+  assertKnownFeatureFlag(flagKey);
+
+  const org = await Organisation.findOne({ where: { id: orgId } });
+
+  if (!org) {
+    throw createError('HTTP_404', 'Organisation not found', 404);
+  }
+
+  const nextSettings = normalizeOrgFeatureSettings(org.settings);
+  nextSettings.featureFlags.overrides[flagKey] = Boolean(enabled);
+
+  await org.update({ settings: nextSettings });
+
+  return {
+    key: flagKey,
+    orgId: org.id,
+    orgName: org.name,
+    orgSlug: org.slug,
+    enabled: Boolean(enabled),
+  };
+}
+
+async function removeFeatureFlagOrgOverride({ flagKey, orgId }) {
+  assertKnownFeatureFlag(flagKey);
+
+  const org = await Organisation.findOne({ where: { id: orgId } });
+
+  if (!org) {
+    throw createError('HTTP_404', 'Organisation not found', 404);
+  }
+
+  const nextSettings = normalizeOrgFeatureSettings(org.settings);
+  delete nextSettings.featureFlags.overrides[flagKey];
+
+  await org.update({ settings: nextSettings });
+
+  return {
+    key: flagKey,
+    orgId: org.id,
+    removed: true,
+  };
+}
+
+async function getFeatureFlagOrgs(flagKey) {
+  assertKnownFeatureFlag(flagKey);
+
+  const orgs = await Organisation.findAll({
+    attributes: ['id', 'name', 'slug', 'settings'],
+    order: [['name', 'ASC']],
+  });
+
+  const results = orgs
+    .map((org) => {
+      const normalizedSettings = normalizeOrgFeatureSettings(org.settings);
+      const overrideValue = normalizedSettings.featureFlags.overrides?.[flagKey];
+
+      if (typeof overrideValue !== 'boolean') {
+        return null;
+      }
+
+      return {
+        orgId: org.id,
+        orgName: org.name,
+        orgSlug: org.slug,
+        enabled: overrideValue,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    key: flagKey,
+    orgs: results,
+  };
+}
+
+async function getAnalyticsGrowth(query = {}) {
+  const weeks = Math.max(1, Math.min(Number(query.weeks) || 12, 26));
+  const months = Math.max(1, Math.min(Number(query.months) || 6, 24));
+  const weekStart = startOfUtcWeek(new Date());
+  const weekSeries = Array.from({ length: weeks }, (_, index) => addUtcDays(weekStart, -7 * (weeks - 1 - index)));
+  const monthStart = startOfUtcMonth(new Date());
+  const monthSeries = Array.from({ length: months }, (_, index) => addUtcMonths(monthStart, -(months - 1 - index)));
+
+  const [orgs, employees] = await Promise.all([
+    Organisation.findAll({
+      attributes: ['id', 'created_at'],
+      paranoid: false,
+    }),
+    Employee.findAll({
+      attributes: ['id', 'created_at'],
+      where: {
+        role: {
+          [Op.ne]: 'superadmin',
+        },
+      },
+      paranoid: false,
+    }),
+  ]);
+
+  const newOrgsWeekly = weekSeries.map((start) => {
+    const end = addUtcDays(start, 7);
+    const count = orgs.filter((org) => {
+      const createdAt = new Date(org.created_at);
+      return createdAt >= start && createdAt < end;
+    }).length;
+
+    return {
+      week: formatWeekLabel(start),
+      count,
+    };
+  });
+
+  const employeeGrowth = monthSeries.map((start) => {
+    const end = addUtcMonths(start, 1);
+    const total = employees.filter((employee) => new Date(employee.created_at) < end).length;
+
+    return {
+      month: formatMonthLabel(start),
+      total,
+    };
+  });
+
+  return {
+    newOrgsWeekly,
+    employeeGrowth,
+  };
+}
+
+async function getAnalyticsUsage(query = {}) {
+  const days = Math.max(1, Math.min(Number(query.days) || 30, 90));
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const dateSeries = Array.from({ length: days }, (_, index) => addUtcDays(today, -(days - 1 - index)));
+
+  const [attendanceRows, employees] = await Promise.all([
+    Attendance.findAll({
+      attributes: ['date'],
+      where: {
+        date: {
+          [Op.gte]: dateSeries[0].toISOString().slice(0, 10),
+          [Op.lte]: dateSeries[dateSeries.length - 1].toISOString().slice(0, 10),
+        },
+      },
+      paranoid: false,
+    }),
+    Employee.findAll({
+      attributes: ['face_embedding_local', 'face_embedding_id'],
+      where: {
+        role: {
+          [Op.ne]: 'superadmin',
+        },
+      },
+      paranoid: false,
+    }),
+  ]);
+
+  const attendanceByDate = attendanceRows.reduce((acc, row) => {
+    const key = row.date;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const enrolledEmployees = employees.filter(
+    (employee) => Boolean(employee.face_embedding_id || employee.face_embedding_local)
+  );
+  const localCapableEmployees = enrolledEmployees.filter(
+    (employee) => Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128
+  );
+  const localFacePercent = enrolledEmployees.length > 0
+    ? Math.round((localCapableEmployees.length / enrolledEmployees.length) * 100)
+    : 0;
+
+  return {
+    checkinsDaily: dateSeries.map((date) => {
+      const key = date.toISOString().slice(0, 10);
+      return {
+        date: key,
+        count: attendanceByDate[key] || 0,
+      };
+    }),
+    localFacePercent,
+    cloudFacePercent: Math.max(0, 100 - localFacePercent),
+  };
+}
+
+async function getAnalyticsRetention() {
+  const now = new Date();
+  const currentMonth = startOfUtcMonth(now);
+  const cohortMonths = Array.from({ length: 6 }, (_, index) => addUtcMonths(currentMonth, -(6 - index)));
+  const orgs = await Organisation.findAll({
+    attributes: ['id', 'created_at', 'is_active', 'plan'],
+    paranoid: false,
+  });
+
+  const cohorts = cohortMonths.map((monthStart) => {
+    const monthEnd = addUtcMonths(monthStart, 1);
+    const cohortOrgs = orgs.filter((org) => {
+      const createdAt = new Date(org.created_at);
+      return createdAt >= monthStart && createdAt < monthEnd;
+    });
+    const size = cohortOrgs.length;
+
+    const monthData = {
+      month: formatMonthLabel(monthStart),
+      size,
+    };
+
+    for (let offset = 1; offset <= 6; offset += 1) {
+      const evaluationMonthEnd = addUtcMonths(monthStart, offset + 1);
+      const eligibleOrgs = cohortOrgs.filter((org) => new Date(org.created_at) < evaluationMonthEnd);
+      const activeOrgs = eligibleOrgs.filter((org) => org.is_active);
+      monthData[`m${offset}`] = eligibleOrgs.length > 0
+        ? Math.round((activeOrgs.length / eligibleOrgs.length) * 100)
+        : null;
+    }
+
+    return monthData;
+  }).filter((cohort) => cohort.size > 0);
+
+  return { cohorts };
+}
+
+async function getBillingOverviewData() {
+  const [orgs, employeeCounts, paymentRecords] = await Promise.all([
+    Organisation.findAll({
+      attributes: ['id', 'name', 'slug', 'plan', 'is_active', 'created_at', 'updated_at'],
+      paranoid: false,
+    }),
+    Employee.findAll({
+      attributes: ['org_id'],
+      where: {
+        role: {
+          [Op.ne]: 'superadmin',
+        },
+        is_active: true,
+      },
+      paranoid: false,
+    }),
+    PaymentRecord.findAll({
+      attributes: ['id', 'org_id', 'invoice_id', 'amount_paise', 'currency', 'status', 'created_at'],
+      order: [['created_at', 'DESC']],
+    }),
+  ]);
+
+  const employeeCountByOrg = employeeCounts.reduce((acc, employee) => {
+    const key = employee.org_id;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const orgBillingRows = orgs.map((org) => {
+    const employeeCount = employeeCountByOrg[org.id] || 0;
+    const mrr = getOrgMonthlyMrr(org, employeeCount);
+
+    return {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      plan: org.plan,
+      isActive: Boolean(org.is_active),
+      createdAt: org.created_at,
+      updatedAt: org.updated_at,
+      employeeCount,
+      mrr,
+    };
+  });
+
+  return {
+    orgs: orgBillingRows,
+    paymentRecords,
+  };
+}
+
+async function getRevenueSummary() {
+  const { orgs, paymentRecords } = await getBillingOverviewData();
+  const now = new Date();
+  const monthStart = startOfUtcMonth(now);
+  const nextMonthStart = addUtcMonths(monthStart, 1);
+  const previousMonthStart = addUtcMonths(monthStart, -1);
+
+  const payingOrgs = orgs.filter((org) => org.isActive && org.plan !== 'trial').length;
+  const mrr = orgs
+    .filter((org) => org.isActive)
+    .reduce((sum, org) => sum + org.mrr, 0);
+  const arpu = payingOrgs > 0 ? Math.round(mrr / payingOrgs) : 0;
+
+  const newRevMTD = orgs
+    .filter((org) => org.isActive && org.plan !== 'trial' && new Date(org.createdAt) >= monthStart)
+    .reduce((sum, org) => sum + org.mrr, 0);
+
+  const churnedRevMTD = orgs
+    .filter((org) => !org.isActive && new Date(org.updatedAt) >= monthStart)
+    .reduce((sum, org) => sum + org.mrr, 0);
+
+  return {
+    mrr,
+    payingOrgs,
+    arpu,
+    newRevMTD,
+    churnedRevMTD,
+    previousMonthRevenue: paymentRecords
+      .filter((record) => {
+        const createdAt = new Date(record.created_at);
+        return createdAt >= previousMonthStart && createdAt < monthStart && record.status === 'verified';
+      })
+      .reduce((sum, record) => sum + Math.round(Number(record.amount_paise || 0) / 100), 0),
+    currentMonthRevenue: paymentRecords
+      .filter((record) => {
+        const createdAt = new Date(record.created_at);
+        return createdAt >= monthStart && createdAt < nextMonthStart && record.status === 'verified';
+      })
+      .reduce((sum, record) => sum + Math.round(Number(record.amount_paise || 0) / 100), 0),
+  };
+}
+
+async function getBillingMrrHistory(query = {}) {
+  const months = Math.max(1, Math.min(Number(query.months) || 12, 24));
+  const { orgs } = await getBillingOverviewData();
+  const currentMonth = startOfUtcMonth(new Date());
+  const monthSeries = Array.from({ length: months }, (_, index) => addUtcMonths(currentMonth, -(months - 1 - index)));
+
+  return monthSeries.map((monthStart) => ({
+    month: formatMonthLabel(monthStart),
+    mrr: orgs
+      .filter((org) => {
+        const createdAt = new Date(org.createdAt);
+        const updatedAt = new Date(org.updatedAt);
+        return createdAt < addUtcMonths(monthStart, 1) && (org.isActive || updatedAt >= monthStart);
+      })
+      .reduce((sum, org) => sum + org.mrr, 0),
+  }));
+}
+
+async function getBillingPlanBreakdown() {
+  const { orgs } = await getBillingOverviewData();
+  const breakdown = new Map();
+
+  orgs
+    .filter((org) => org.isActive)
+    .forEach((org) => {
+      const current = breakdown.get(org.plan) || { plan: org.plan, count: 0, revenue: 0 };
+      current.count += 1;
+      current.revenue += org.mrr;
+      breakdown.set(org.plan, current);
+    });
+
+  return Array.from(breakdown.values()).sort((a, b) => b.revenue - a.revenue);
+}
+
+async function getBillingChurnedOrgs(query = {}) {
+  const limit = Math.max(1, Math.min(Number(query.limit) || 10, 50));
+  const monthStart = startOfUtcMonth(new Date());
+  const { orgs } = await getBillingOverviewData();
+
+  const churned = orgs
+    .filter((org) => !org.isActive && new Date(org.updatedAt) >= monthStart)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    .slice(0, limit)
+    .map((org) => ({
+      id: org.id,
+      name: org.name,
+      mrr: org.mrr,
+      cancelledAt: org.updatedAt,
+    }));
+
+  return {
+    orgs: churned,
+    total: churned.length,
+  };
+}
+
+async function getBillingInvoices(query = {}) {
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(Number(query.limit) || 20, 100));
+  const offset = (page - 1) * limit;
+  const { orgs, paymentRecords } = await getBillingOverviewData();
+  const orgMap = Object.fromEntries(orgs.map((org) => [org.id, org]));
+
+  const invoices = paymentRecords.map((record) => ({
+    id: record.id,
+    invoiceNo: record.invoice_id,
+    orgName: orgMap[record.org_id]?.name || 'Unknown Org',
+    amount: Math.round(Number(record.amount_paise || 0) / 100),
+    currency: record.currency || 'INR',
+    date: record.created_at,
+    status: record.status === 'verified' ? 'paid' : record.status,
+  }));
+
+  return {
+    invoices: invoices.slice(offset, offset + limit),
+    total: invoices.length,
+    page,
+    limit,
+  };
+}
+
+async function getBillingTopOrgs(query = {}) {
+  const limit = Math.max(1, Math.min(Number(query.limit) || 10, 50));
+  const { orgs } = await getBillingOverviewData();
+
+  return {
+    orgs: orgs
+      .filter((org) => org.isActive)
+      .sort((a, b) => b.mrr - a.mrr)
+      .slice(0, limit)
+      .map((org, index) => ({
+        id: org.id,
+        rank: index + 1,
+        name: org.name,
+        plan: org.plan,
+        employeeCount: org.employeeCount,
+        mrr: org.mrr,
+      })),
+  };
+}
+
+async function getQueueStatusByName(queueName) {
+  const queue = queues[queueName];
+
+  if (!queue || typeof queue.getJobCounts !== 'function') {
+    throw createError('HTTP_404', 'Queue not found', 404);
+  }
+
+  const counts = await queue.getJobCounts();
+
+  return {
+    name: queueName,
+    waiting: counts.waiting || 0,
+    active: counts.active || 0,
+    completed: counts.completed || 0,
+    failed: counts.failed || 0,
+    delayed: counts.delayed || 0,
+  };
+}
+
+async function getDatabaseHealthStatus() {
+  const startedAt = Date.now();
+  await sequelize.authenticate();
+  const latency = Date.now() - startedAt;
+
+  return {
+    status: 'healthy',
+    latency,
+  };
+}
+
+async function retryQueueJob(queueName, jobId) {
+  const queue = queues[queueName];
+
+  if (!queue || typeof queue.getJob !== 'function') {
+    throw createError('HTTP_404', 'Queue not found', 404);
+  }
+
+  const job = await queue.getJob(jobId);
+
+  if (!job) {
+    throw createError('HTTP_404', 'Job not found', 404);
+  }
+
+  await job.retry();
+
+  return {
+    queue: queueName,
+    jobId: job.id,
+    retried: true,
+  };
+}
+
+async function retryAllFailedJobs(queueName) {
+  const queue = queues[queueName];
+
+  if (!queue || typeof queue.getFailed !== 'function') {
+    throw createError('HTTP_404', 'Queue not found', 404);
+  }
+
+  const failedJobs = await queue.getFailed();
+  let retriedCount = 0;
+
+  for (const job of failedJobs) {
+    await job.retry();
+    retriedCount += 1;
+  }
+
+  return {
+    queue: queueName,
+    retriedCount,
+  };
+}
+
 module.exports = {
   login,
   refresh,
@@ -1040,6 +1748,7 @@ module.exports = {
   getOrgEmployees,
   getOrgAttendanceToday,
   getOrgBilling,
+  sendBillingAlert,
   suspendOrg,
   activateOrg,
   changePlan,
@@ -1050,4 +1759,22 @@ module.exports = {
   endImpersonation,
   getActiveImpersonation,
   getImpersonationHistory,
+  getAllFeatureFlags,
+  setFeatureFlagGlobal,
+  setFeatureFlagOrgOverride,
+  removeFeatureFlagOrgOverride,
+  getFeatureFlagOrgs,
+  getAnalyticsGrowth,
+  getAnalyticsUsage,
+  getAnalyticsRetention,
+  getRevenueSummary,
+  getBillingMrrHistory,
+  getBillingPlanBreakdown,
+  getBillingChurnedOrgs,
+  getBillingInvoices,
+  getBillingTopOrgs,
+  getQueueStatusByName,
+  getDatabaseHealthStatus,
+  retryQueueJob,
+  retryAllFailedJobs,
 };

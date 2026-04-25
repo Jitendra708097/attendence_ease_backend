@@ -96,6 +96,20 @@ async function getOrgBilling(req, res) {
   }
 }
 
+async function sendBillingAlert(req, res) {
+  try {
+    const data = await superadminService.sendBillingAlert({
+      orgId: req.params.orgId,
+      alertType: req.body.alertType,
+      customMessage: req.body.customMessage,
+    });
+    await log(req.employee, 'ORG_BILLING_ALERT_SENT', { type: 'organisation', id: req.params.orgId }, null, data, req);
+    return ok(res, data, 'Billing alert email queued');
+  } catch (error) {
+    return fail(res, error.code || 'SA_026', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function suspendOrg(req, res) {
   try {
     const data = await superadminService.suspendOrg({ orgId: req.params.orgId });
@@ -196,6 +210,87 @@ async function recentSignups(req, res) {
   }
 }
 
+async function analyticsGrowth(req, res) {
+  try {
+    const data = await superadminService.getAnalyticsGrowth(req.query);
+    return ok(res, data, 'Growth analytics fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_029', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function analyticsUsage(req, res) {
+  try {
+    const data = await superadminService.getAnalyticsUsage(req.query);
+    return ok(res, data, 'Usage analytics fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_030', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function analyticsRetention(req, res) {
+  try {
+    const data = await superadminService.getAnalyticsRetention();
+    return ok(res, data, 'Retention analytics fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_031', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function revenueSummary(req, res) {
+  try {
+    const data = await superadminService.getRevenueSummary();
+    return ok(res, data, 'Revenue summary fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_032', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function billingMrrHistory(req, res) {
+  try {
+    const data = await superadminService.getBillingMrrHistory(req.query);
+    return ok(res, data, 'Billing MRR history fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_033', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function billingPlanBreakdown(req, res) {
+  try {
+    const data = await superadminService.getBillingPlanBreakdown();
+    return ok(res, data, 'Billing plan breakdown fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_034', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function billingChurn(req, res) {
+  try {
+    const data = await superadminService.getBillingChurnedOrgs(req.query);
+    return ok(res, data, 'Billing churn fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_035', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function billingInvoices(req, res) {
+  try {
+    const data = await superadminService.getBillingInvoices(req.query);
+    return ok(res, data, 'Billing invoices fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_036', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function billingTopOrgs(req, res) {
+  try {
+    const data = await superadminService.getBillingTopOrgs(req.query);
+    return ok(res, data, 'Top billing organisations fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_037', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function health(req, res) {
   try {
     const data = await superadminService.getStats();
@@ -287,6 +382,100 @@ async function auditLogs(req, res) {
   }
 }
 
+async function getFeatureFlags(req, res) {
+  try {
+    const data = await superadminService.getAllFeatureFlags();
+    return ok(res, data, 'Feature flags fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_028', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function setGlobalFeatureFlag(req, res) {
+  try {
+    const data = await superadminService.setFeatureFlagGlobal({
+      flagKey: req.params.key,
+      enabled: req.body.enabled,
+    });
+    await log(req.employee, 'FEATURE_FLAG_CHANGED', { type: 'feature_flag', id: req.params.key }, null, data, req);
+    return ok(res, data, 'Global feature flag updated');
+  } catch (error) {
+    return fail(res, error.code || 'SA_028', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function setOrgFeatureFlagOverride(req, res) {
+  try {
+    const data = await superadminService.setFeatureFlagOrgOverride({
+      flagKey: req.params.key,
+      orgId: req.params.orgId,
+      enabled: req.body.enabled,
+    });
+    await log(req.employee, 'FEATURE_FLAG_CHANGED', { type: 'feature_flag_override', id: `${req.params.key}:${req.params.orgId}` }, null, data, req);
+    return ok(res, data, 'Organisation feature flag override updated');
+  } catch (error) {
+    return fail(res, error.code || 'SA_028', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function removeOrgFeatureFlagOverride(req, res) {
+  try {
+    const data = await superadminService.removeFeatureFlagOrgOverride({
+      flagKey: req.params.key,
+      orgId: req.params.orgId,
+    });
+    await log(req.employee, 'FEATURE_FLAG_CHANGED', { type: 'feature_flag_override', id: `${req.params.key}:${req.params.orgId}` }, null, data, req);
+    return ok(res, data, 'Organisation feature flag override removed');
+  } catch (error) {
+    return fail(res, error.code || 'SA_028', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function getFeatureFlagOrgs(req, res) {
+  try {
+    const data = await superadminService.getFeatureFlagOrgs(req.params.key);
+    return ok(res, data, 'Feature flag organisations fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_028', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function queueByName(req, res) {
+  try {
+    const data = await superadminService.getQueueStatusByName(req.params.name);
+    return ok(res, data, 'Queue status fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_038', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function databaseStatus(req, res) {
+  try {
+    const data = await superadminService.getDatabaseHealthStatus();
+    return ok(res, data, 'Database status fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_039', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function retryQueueJob(req, res) {
+  try {
+    const data = await superadminService.retryQueueJob(req.params.queue, req.params.jobId);
+    return ok(res, data, 'Queue job retried');
+  } catch (error) {
+    return fail(res, error.code || 'SA_040', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function retryAllQueueJobs(req, res) {
+  try {
+    const data = await superadminService.retryAllFailedJobs(req.params.queue);
+    return ok(res, data, 'All failed queue jobs retried');
+  } catch (error) {
+    return fail(res, error.code || 'SA_041', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   login,
   refresh,
@@ -298,6 +487,7 @@ module.exports = {
   getOrgEmployees,
   getOrgAttendance,
   getOrgBilling,
+  sendBillingAlert,
   suspendOrg,
   activateOrg,
   changePlan,
@@ -306,6 +496,15 @@ module.exports = {
   dashboard,
   mrr,
   growth,
+  analyticsGrowth,
+  analyticsUsage,
+  analyticsRetention,
+  revenueSummary,
+  billingMrrHistory,
+  billingPlanBreakdown,
+  billingChurn,
+  billingInvoices,
+  billingTopOrgs,
   alerts,
   recentSignups,
   health,
@@ -317,4 +516,13 @@ module.exports = {
   activeImpersonation,
   impersonationHistory,
   auditLogs,
+  getFeatureFlags,
+  setGlobalFeatureFlag,
+  setOrgFeatureFlagOverride,
+  removeOrgFeatureFlagOverride,
+  getFeatureFlagOrgs,
+  queueByName,
+  databaseStatus,
+  retryQueueJob,
+  retryAllQueueJobs,
 };

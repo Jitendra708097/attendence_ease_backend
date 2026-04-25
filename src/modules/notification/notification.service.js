@@ -4,7 +4,23 @@ const { notification: notificationQueue } = require('../../queues');
 const { getPagination } = require('../../utils/pagination');
 const { log } = require('../../utils/auditLog');
 const { sendMulticast } = require('./notification.fcm');
-const { sendWelcomeEmployeeEmail } = require('./email.service');
+const { sendWelcomeEmployeeEmail, sendOrgAdminBillingAlertEmail } = require('./email.service');
+
+function buildNotificationDto(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    body: row.body,
+    message: row.body,
+    actionUrl: row.action_url,
+    action_url: row.action_url,
+    isRead: Boolean(row.is_read),
+    is_read: Boolean(row.is_read),
+    readAt: row.read_at,
+    createdAt: row.created_at,
+  };
+}
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -143,6 +159,61 @@ async function processSendPushJob(jobData) {
   return dispatchPushNow(orgId, empIds, { type, title, body, actionUrl });
 }
 
+async function processShiftReminderJob(jobData) {
+  const {
+    orgId,
+    shiftId,
+    reminderType,
+    type,
+    title,
+    body,
+    actionUrl = null,
+  } = jobData;
+
+  if (!orgId || !shiftId || !title || !body) {
+    return {
+      sentCount: 0,
+      failedCount: 0,
+      notificationCount: 0,
+      skipped: true,
+      reason: 'invalid_payload',
+    };
+  }
+
+  const employees = await Employee.findAll({
+    where: {
+      org_id: orgId,
+      shift_id: shiftId,
+      is_active: true,
+      role: {
+        [Op.ne]: 'superadmin',
+      },
+    },
+    attributes: ['id'],
+  });
+
+  if (employees.length === 0) {
+    return {
+      sentCount: 0,
+      failedCount: 0,
+      notificationCount: 0,
+      skipped: true,
+      reason: 'no_recipients',
+    };
+  }
+
+  return dispatchPushNow(
+    orgId,
+    employees.map((employee) => employee.id),
+    {
+      type: type || reminderType || 'shift_reminder',
+      title,
+      body,
+      actionUrl,
+    }
+  );
+}
+
 async function processSendWelcomeEmailJob(jobData) {
   const {
     email,
@@ -165,6 +236,32 @@ async function processSendWelcomeEmailJob(jobData) {
     employeeName,
     employeeEmail: email,
     tempPassword,
+  });
+}
+
+async function processSendBillingAlertEmailJob(jobData) {
+  const {
+    email,
+    organisationName,
+    adminName,
+    alertType,
+    customMessage,
+  } = jobData;
+
+  if (!email || !organisationName || !adminName || !alertType) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: 'invalid_payload',
+    };
+  }
+
+  return sendOrgAdminBillingAlertEmail({
+    to: email,
+    organisationName,
+    adminName,
+    alertType,
+    customMessage,
   });
 }
 
@@ -226,6 +323,50 @@ async function sendPush(empIds, payload) {
   };
 }
 
+async function notifyOrgRoles(orgId, roles, payload, options = {}) {
+  if (!orgId || !Array.isArray(roles) || roles.length === 0 || !payload) {
+    return {
+      queued: 0,
+      jobs: [],
+    };
+  }
+
+  const excludeEmployeeIds = Array.isArray(options.excludeEmployeeIds)
+    ? options.excludeEmployeeIds.filter(Boolean)
+    : [];
+
+  const where = {
+    org_id: orgId,
+    is_active: true,
+    role: {
+      [Op.in]: roles,
+    },
+  };
+
+  if (excludeEmployeeIds.length > 0) {
+    where.id = {
+      [Op.notIn]: excludeEmployeeIds,
+    };
+  }
+
+  const employees = await Employee.findAll({
+    where,
+    attributes: ['id'],
+  });
+
+  if (employees.length === 0) {
+    return {
+      queued: 0,
+      jobs: [],
+    };
+  }
+
+  return sendPush(
+    employees.map((employee) => employee.id),
+    payload
+  );
+}
+
 async function queueWelcomeEmail(payload) {
   if (!payload || !payload.email || !payload.organisationName || !payload.employeeName || !payload.tempPassword) {
     throw createError('NOTIF_003', 'Welcome email payload is incomplete', 422);
@@ -241,6 +382,31 @@ async function queueWelcomeEmail(payload) {
     },
     {
       jobId: `welcome_email_${payload.email}_${Date.now()}`,
+    }
+  );
+
+  return {
+    queued: true,
+    jobId: job.id,
+  };
+}
+
+async function queueBillingAlertEmail(payload) {
+  if (!payload || !payload.email || !payload.organisationName || !payload.adminName || !payload.alertType) {
+    throw createError('NOTIF_004', 'Billing alert email payload is incomplete', 422);
+  }
+
+  const job = await notificationQueue.add(
+    'send_billing_alert_email',
+    {
+      email: payload.email,
+      organisationName: payload.organisationName,
+      adminName: payload.adminName,
+      alertType: payload.alertType,
+      customMessage: payload.customMessage || null,
+    },
+    {
+      jobId: `billing_alert_email_${payload.email}_${Date.now()}`,
     }
   );
 
@@ -272,17 +438,9 @@ async function listNotifications({ orgId, employeeId, query }) {
   });
 
   return {
-    notifications: result.rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      title: row.title,
-      body: row.body,
-      actionUrl: row.action_url,
-      isRead: Boolean(row.is_read),
-      readAt: row.read_at,
-      createdAt: row.created_at,
-    })),
+    notifications: result.rows.map(buildNotificationDto),
     unreadCount,
+    count: unreadCount,
     page,
     total: result.count,
     hasMore: offset + result.rows.length < result.count,
@@ -353,6 +511,7 @@ async function getUnreadCount({ orgId, employeeId }) {
 
   return {
     unreadCount,
+    count: unreadCount,
   };
 }
 
@@ -408,9 +567,13 @@ async function registerToken({ orgId, employeeId, body, req }) {
 
 module.exports = {
   sendPush,
+  notifyOrgRoles,
   queueWelcomeEmail,
+  queueBillingAlertEmail,
   processSendPushJob,
+  processShiftReminderJob,
   processSendWelcomeEmailJob,
+  processSendBillingAlertEmailJob,
   listNotifications,
   markAsRead,
   markAllAsRead,

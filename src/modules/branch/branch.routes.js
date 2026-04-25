@@ -11,6 +11,7 @@ router.use(authenticate, orgGuard, roleGuard('admin', 'manager', 'superadmin'));
 
 router.get('/', asyncHandler(branchController.listBranches));
 router.post('/', asyncHandler(branchController.createBranch));
+router.get('/current/geofence', asyncHandler(branchController.getCurrentBranchGeofence));
 router.get('/:id/geofence', asyncHandler(branchController.getGeofence));
 router.put('/:id/geofence', asyncHandler(branchController.updateGeofence));
 router.get('/:id', asyncHandler(branchController.getBranch));

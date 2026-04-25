@@ -46,9 +46,13 @@ async function enroll(req, res) {
       'face.enroll.requested',
       { type: 'employee', id: req.employee.id },
       null,
-      { status: 'pending' },
+      { status: data.processedInline || data.status === 'enrolled' ? 'enrolled' : 'pending' },
       req
     );
+
+    if (data.processedInline || data.status === 'enrolled') {
+      return ok(res, data, 'Face enrollment completed');
+    }
 
     return ok(res, data, 'Face enrollment queued', 202);
   } catch (error) {

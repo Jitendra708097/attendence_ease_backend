@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const { DeviceException, Employee } = require('../../models');
-const { sendPush } = require('../notification/notification.service');
+const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -91,6 +91,22 @@ async function createDeviceException({ orgId, empId, tempDeviceId, reason, appro
       },
     ],
   });
+
+  if (!approveNow) {
+    await notifyOrgRoles(
+      orgId,
+      ['admin'],
+      {
+        type: 'device_exception_requested',
+        title: 'Device exception pending',
+        body: `${employee.name} requested a one-time device exception.`,
+        actionUrl: '/device-exceptions',
+      },
+      {
+        excludeEmployeeIds: [empId],
+      }
+    );
+  }
 
   return toDto(hydrated);
 }
