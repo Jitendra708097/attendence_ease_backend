@@ -31,16 +31,17 @@ app.use(requestId);
 app.use(helmet());
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+     origin(origin, callback) {
+       if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+         return callback(null, true);
+       }
 
-      return callback(Object.assign(new Error('Origin not allowed by CORS'), { statusCode: 403, code: 'HTTP_403' }));
-    },
-    credentials: true,
-  })
-);
+       return callback(Object.assign(new Error('Origin not allowed by CORS'), { statusCode: 403, code: 'HTTP_403' }));
+     },
+     credentials: true,
+     exposedHeaders: ['Content-Disposition', 'Content-Type'],
+   })
+ );
 app.use(express.json());
 app.use(
   morgan(':method :url :status :response-time ms - :res[content-length] req_id=:request-id', {

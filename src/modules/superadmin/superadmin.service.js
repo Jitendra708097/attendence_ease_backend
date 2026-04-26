@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 const {  AuditLog, Attendance, Branch, Department, Employee, ImpersonationSession, Organisation, PaymentRecord, RefreshToken, Shift, sequelize } = require('../../models');
 const { compareValue, hashValue, signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/auth');
 const { getPagination } = require('../../utils/pagination');
@@ -34,6 +35,52 @@ function createError(code, message, statusCode, details = []) {
   error.statusCode = statusCode;
   error.details = details;
   return error;
+}
+
+function escapeCsvValue(value) {
+  if (value == null) {
+    return '';
+  }
+
+  const stringValue = String(value);
+  if (/[",\r\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+
+  return stringValue;
+}
+
+function buildCsv(rows) {
+  return rows.map((row) => row.map(escapeCsvValue).join(',')).join('\r\n');
+}
+
+function getColumnWidth(value) {
+  if (value == null) {
+    return 10;
+  }
+
+  const stringValue = String(value);
+  const longestLine = stringValue.split(/\r?\n/).reduce((max, line) => Math.max(max, line.length), 0);
+  return Math.min(Math.max(longestLine + 2, 10), 40);
+}
+
+function buildWorkbookBuffer(sheetName, rows) {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  const columnCount = Math.max(...rows.map((row) => row.length), 0);
+
+  worksheet['!cols'] = Array.from({ length: columnCount }, (_, columnIndex) => ({
+    wch: Math.max(...rows.map((row) => getColumnWidth(row[columnIndex]))),
+  }));
+
+  if (rows.length > 0 && columnCount > 0) {
+    worksheet['!autofilter'] = {
+      ref: `A1:${XLSX.utils.encode_cell({ r: 0, c: columnCount - 1 })}`,
+    };
+  }
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
 function getFeatureFlagRedisKey(flagKey) {
@@ -398,6 +445,83 @@ async function listOrgs(query = {}) {
     total: query.status === 'trial' || query.status === 'active' ? filtered.length : result.count,
     page,
     limit,
+  };
+}
+
+async function exportOrganisations(query = {}) {
+  const data = await listOrgs({
+    ...query,
+    page: 1,
+    limit: 10000,
+  });
+
+  const orgIds = data.orgs.map((org) => org.id);
+  const owners = orgIds.length > 0
+    ? await Employee.findAll({
+        where: {
+          org_id: { [Op.in]: orgIds },
+          role: 'admin',
+        },
+        attributes: ['org_id', 'name', 'email'],
+        order: [['created_at', 'ASC']],
+      })
+    : [];
+
+  const ownerByOrgId = owners.reduce((accumulator, owner) => {
+    if (!accumulator[owner.org_id]) {
+      accumulator[owner.org_id] = owner;
+    }
+    return accumulator;
+  }, {});
+
+  const rows = [
+    [
+      'Organisation Name',
+      'Slug',
+      'Status',
+      'Plan',
+      'Timezone',
+      'Employees',
+      'Branches',
+      'MRR',
+      'Owner Name',
+      'Owner Email',
+      'Trial Ends At',
+      'Created At',
+      'Updated At',
+    ],
+    ...data.orgs.map((org) => [
+      org.name,
+      org.slug,
+      org.status,
+      org.plan,
+      org.timezone || '',
+      org.employeeCount || 0,
+      org.branchCount || 0,
+      org.mrr || 0,
+      ownerByOrgId[org.id]?.name || '',
+      ownerByOrgId[org.id]?.email || '',
+      org.trialEndsAt ? new Date(org.trialEndsAt).toISOString() : '',
+      org.createdAt ? new Date(org.createdAt).toISOString() : '',
+      org.updatedAt ? new Date(org.updatedAt).toISOString() : '',
+    ]),
+  ];
+
+  const filenameDate = new Date().toISOString().slice(0, 10);
+  const format = String(query.format || 'csv').toLowerCase();
+
+  if (format === 'xlsx') {
+    return {
+      filename: `organisations-export-${filenameDate}.xlsx`,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      body: buildWorkbookBuffer('Organisations', rows),
+    };
+  }
+
+  return {
+    filename: `organisations-export-${filenameDate}.csv`,
+    contentType: 'text/csv; charset=utf-8',
+    body: `${buildCsv(rows)}\r\n`,
   };
 }
 
@@ -1744,6 +1868,7 @@ module.exports = {
   getMe,
   createOrg,
   listOrgs,
+  exportOrganisations,
   getOrgDetail,
   getOrgEmployees,
   getOrgAttendanceToday,

@@ -110,6 +110,17 @@ async function live(req, res) {
   }
 }
 
+async function exportCsv(req, res) {
+  try {
+    const result = await attendanceService.exportAttendance(req.org_id, req.query);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function statsToday(req, res) {
   try {
     const data = await attendanceService.getTodayStats(req.org_id);
@@ -154,6 +165,7 @@ module.exports = {
   today,
   list,
   history,
+  exportCsv,
   getById,
   manual,
   live,

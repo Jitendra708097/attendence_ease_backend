@@ -50,6 +50,17 @@ async function listOrgs(req, res) {
   }
 }
 
+async function exportOrgs(req, res) {
+  try {
+    const result = await superadminService.exportOrganisations(req.query);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return fail(res, error.code || 'SA_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function createOrg(req, res) {
   try {
     const data = await superadminService.createOrg(req.body);
@@ -481,6 +492,7 @@ module.exports = {
   refresh,
   logout,
   me,
+  exportOrgs,
   createOrg,
   listOrgs,
   getOrg,

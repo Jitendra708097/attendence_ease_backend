@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 const { Attendance, AttendanceSession, AuditLog, Branch, DeviceException, DeviceToken, Employee, LeaveRequest, Organisation, Regularisation, Shift } = require('../../models');
 const { redisClient } = require('../../config/redis');
 const { checkoutGrace } = require('../../queues');
@@ -7,6 +8,7 @@ const { createChallenge, consumeChallenge } = require('./attendance.challengeSer
 const { computeAttendanceStatus } = require('./attendance.statusEngine');
 const { checkGeofence } = require('../geofence/geofence.service');
 const faceService = require('../face/face.service');
+const { uploadAttendanceSelfie } = require('../face/face.storageService');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -265,6 +267,67 @@ function normalizeFaceMatch(result) {
   };
 }
 
+function toNumberOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function escapeCsvValue(value) {
+  if (value == null) {
+    return '';
+  }
+
+  const stringValue = String(value);
+  if (/[",\r\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+
+  return stringValue;
+}
+
+function buildCsv(rows) {
+  return rows.map((row) => row.map(escapeCsvValue).join(',')).join('\r\n');
+}
+
+function getColumnWidth(value) {
+  if (value == null) {
+    return 10;
+  }
+
+  const stringValue = String(value);
+  const longestLine = stringValue.split(/\r?\n/).reduce((max, line) => Math.max(max, line.length), 0);
+  return Math.min(Math.max(longestLine + 2, 10), 40);
+}
+
+function buildWorkbookBuffer(sheetName, rows) {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  const columnCount = Math.max(...rows.map((row) => row.length), 0);
+
+  worksheet['!cols'] = Array.from({ length: columnCount }, (_, columnIndex) => ({
+    wch: Math.max(...rows.map((row) => getColumnWidth(row[columnIndex]))),
+  }));
+
+  if (rows.length > 0 && columnCount > 0) {
+    worksheet['!autofilter'] = {
+      ref: `A1:${XLSX.utils.encode_cell({ r: 0, c: columnCount - 1 })}`,
+    };
+  }
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function requireSelfieBuffer(selfieBase64, actionLabel) {
+  const selfieBuffer = faceService.decodeSelfie(selfieBase64);
+
+  if (!selfieBuffer) {
+    throw createError('FACE_002', `A valid selfie image is required for ${actionLabel}`, 422);
+  }
+
+  return selfieBuffer;
+}
+
 async function validateLocationForBranch(branch, body) {
   validateGpsPayload(body);
 
@@ -329,12 +392,13 @@ async function checkIn({ orgId, empId, body, req }) {
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
+  const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-in');
 
   const faceVerification = await faceService.verifyFace(
     empId,
     orgId,
     body.faceEmbedding || null,
-    faceService.decodeSelfie(body.selfieBase64)
+    selfieBuffer
   );
   const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
@@ -381,10 +445,14 @@ async function checkIn({ orgId, empId, body, req }) {
   const session = await AttendanceSession.create({
     attendance_id: attendance.id,
     org_id: orgId,
+    emp_id: empId,
     session_number: nextSessionNumber,
     check_in_time: new Date(),
+    check_in_lat: Number(body.lat),
+    check_in_lng: Number(body.lng),
     status: 'open',
     worked_minutes: 0,
+    is_undo_eligible: false,
   });
 
   await attendance.update({
@@ -419,31 +487,25 @@ async function checkIn({ orgId, empId, body, req }) {
 
 async function checkOut({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
+  await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
+
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
-
-  if (body.challengeToken || body.captureTimestamp) {
-    await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
-  }
+  const checkoutSelfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-out');
 
   const attendance = await getTodayAttendance(orgId, empId, timezone);
   if (!attendance) {
     throw createError('HTTP_404', 'Attendance record not found for today', 404);
   }
 
-  let faceMatchScore = attendance.face_match_score || null;
-  let faceMatchSource = attendance.face_match_source || null;
-
-  if (body.faceEmbedding || body.selfieBase64) {
-    const faceVerification = await faceService.verifyFace(
-      empId,
-      orgId,
-      body.faceEmbedding || null,
-      faceService.decodeSelfie(body.selfieBase64)
-    );
-    ({ faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification));
-  }
+  const faceVerification = await faceService.verifyFace(
+    empId,
+    orgId,
+    body.faceEmbedding || null,
+    checkoutSelfieBuffer
+  );
+  let { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
   const session = await getOpenSession(attendance.id);
   if (!session) {
@@ -452,7 +514,22 @@ async function checkOut({ orgId, empId, body, req }) {
 
   const now = new Date();
   const workedMinutes = Math.max(0, Math.round((now.getTime() - new Date(session.check_in_time).getTime()) / 60000));
-  await session.update({ check_out_time: now, worked_minutes: workedMinutes, status: 'completed' });
+  let uploadedCheckoutSelfie = null;
+  try {
+    uploadedCheckoutSelfie = await uploadAttendanceSelfie(checkoutSelfieBuffer, orgId, empId, 'check-out');
+  } catch (error) {
+    uploadedCheckoutSelfie = null;
+  }
+
+  await session.update({
+    check_out_time: now,
+    check_out_lat: Number(body.lat),
+    check_out_lng: Number(body.lng),
+    selfie_url: uploadedCheckoutSelfie ? uploadedCheckoutSelfie.secureUrl : session.selfie_url,
+    worked_minutes: workedMinutes,
+    status: 'completed',
+    is_undo_eligible: true,
+  });
 
   const sessions = await getAttendanceSessions(attendance.id);
   const totalWorkedMinutes = sessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
@@ -508,7 +585,7 @@ async function checkOut({ orgId, empId, body, req }) {
     empName: employee.name,
     action: 'check-out',
     time: session.check_out_time,
-    selfieUrl: null,
+    selfieUrl: session.selfie_url || null,
     status: computed.status,
   });
 
@@ -517,6 +594,10 @@ async function checkOut({ orgId, empId, body, req }) {
       id: session.id,
       checkInTime: session.check_in_time,
       checkOutTime: session.check_out_time,
+      checkOutLat: toNumberOrNull(session.check_out_lat),
+      checkOutLng: toNumberOrNull(session.check_out_lng),
+      selfieUrl: session.selfie_url || null,
+      faceMethod: faceMatchSource,
       status: session.status,
       workedMinutes,
     },
@@ -544,7 +625,15 @@ async function undoCheckout({ orgId, empId, req }) {
     throw createError('ATT_007', 'Undo window has expired', 400);
   }
 
-  await lastSession.update({ check_out_time: null, worked_minutes: 0, status: 'open' });
+  await lastSession.update({
+    check_out_time: null,
+    check_out_lat: null,
+    check_out_lng: null,
+    selfie_url: null,
+    worked_minutes: 0,
+    status: 'open',
+    is_undo_eligible: false,
+  });
 
   const completedSessions = sessions.filter((item) => item.id !== lastSession.id);
   const totalWorkedMinutes = completedSessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
@@ -634,6 +723,103 @@ async function listAttendance(orgId, query) {
       count: result.count,
       totalPages: Math.ceil(result.count / limit) || 1,
     },
+  };
+}
+
+async function exportAttendance(orgId, query) {
+  const where = { org_id: orgId };
+
+  if (query.date) {
+    where.date = query.date;
+  } else if (query.dateFrom || query.dateTo) {
+    where.date = {};
+
+    if (query.dateFrom) {
+      where.date[Op.gte] = query.dateFrom;
+    }
+
+    if (query.dateTo) {
+      where.date[Op.lte] = query.dateTo;
+    }
+  }
+
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  if (query.branch) {
+    where.branch_id = query.branch;
+  }
+
+  if (query.employeeId) {
+    where.emp_id = query.employeeId;
+  }
+
+  const [attendanceRows, branches] = await Promise.all([
+    Attendance.findAll({
+      where,
+      include: [{ model: Employee, as: 'employee', attributes: ['id', 'name', 'email', 'emp_code'] }],
+      order: [['date', 'DESC'], ['created_at', 'DESC']],
+    }),
+    Branch.findAll({
+      where: { org_id: orgId },
+      attributes: ['id', 'name'],
+    }),
+  ]);
+
+  const branchNameById = branches.reduce((accumulator, branch) => {
+    accumulator[branch.id] = branch.name;
+    return accumulator;
+  }, {});
+
+  const rows = [
+    [
+      'Date',
+      'Employee Name',
+      'Employee Code',
+      'Employee Email',
+      'Branch',
+      'Status',
+      'First Check In',
+      'Last Check Out',
+      'Worked Minutes',
+      'Sessions',
+      'Late',
+      'Anomaly',
+      'Manual',
+    ],
+    ...attendanceRows.map((row) => [
+      row.date,
+      row.employee?.name || '',
+      row.employee?.emp_code || '',
+      row.employee?.email || '',
+      branchNameById[row.branch_id] || '',
+      row.status,
+      row.first_check_in ? new Date(row.first_check_in).toISOString() : '',
+      row.last_check_out ? new Date(row.last_check_out).toISOString() : '',
+      row.total_worked_minutes || 0,
+      row.session_count || 0,
+      row.is_late ? 'Yes' : 'No',
+      row.is_anomaly ? 'Yes' : 'No',
+      row.is_manual ? 'Yes' : 'No',
+    ]),
+  ];
+
+  const filenameDate = new Date().toISOString().slice(0, 10);
+  const format = String(query.format || 'csv').toLowerCase();
+
+  if (format === 'xlsx') {
+    return {
+      filename: `attendance-export-${filenameDate}.xlsx`,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      body: buildWorkbookBuffer('Attendance', rows),
+    };
+  }
+
+  return {
+    filename: `attendance-export-${filenameDate}.csv`,
+    contentType: 'text/csv; charset=utf-8',
+    body: `${buildCsv(rows)}\r\n`,
   };
 }
 
@@ -902,6 +1088,13 @@ async function getAttendanceById(orgId, id) {
       sessionNumber: session.session_number,
       checkInTime: session.check_in_time,
       checkOutTime: session.check_out_time,
+      checkInLat: toNumberOrNull(session.check_in_lat),
+      checkInLng: toNumberOrNull(session.check_in_lng),
+      checkOutLat: toNumberOrNull(session.check_out_lat),
+      checkOutLng: toNumberOrNull(session.check_out_lng),
+      selfieUrl: session.selfie_url || null,
+      faceMethod: attendance.face_match_source || null,
+      isUndoEligible: Boolean(session.is_undo_eligible),
       workedMinutes: session.worked_minutes || 0,
       status: session.status,
     })),
@@ -934,6 +1127,7 @@ module.exports = {
   undoCheckout,
   getTodayState,
   listAttendance,
+  exportAttendance,
   getAttendanceHistory,
   getAttendanceById,
   manualMark,

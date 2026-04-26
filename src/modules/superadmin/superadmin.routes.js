@@ -16,6 +16,7 @@ router.get('/auth/me', asyncHandler(superadminController.me));
 
 router.get('/orgs', asyncHandler(superadminController.listOrgs));
 router.get('/organisations', asyncHandler(superadminController.listOrgs));
+router.get('/organisations/export', asyncHandler(superadminController.exportOrgs));
 router.post('/organisations', asyncHandler(superadminController.createOrg));
 router.get('/organisations/search', asyncHandler(superadminController.listOrgs));
 router.get('/orgs/:orgId', asyncHandler(superadminController.getOrg));

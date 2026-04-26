@@ -22,6 +22,7 @@ router.get('/stats/top-late', roleGuard('admin', 'manager', 'superadmin'), async
 router.get('/stats/activity', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.activity));
 router.get('/live', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.live));
 router.get('/', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.list));
+router.get('/export', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.exportCsv));
 router.get('/:id', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.getById));
 router.put('/:id/manual', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.manual));
 
