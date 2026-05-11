@@ -1,7 +1,10 @@
-const { Shift } = require('../../models');
+const { Department, Employee, Shift } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
+const { notifyOrgRoles } = require('../notification/notification.service');
 
 function mapShift(shift) {
+  const assignedEmployees = Array.isArray(shift.employees) ? shift.employees : [];
+
   return {
     id: shift.id,
     name: shift.name,
@@ -19,16 +22,81 @@ function mapShift(shift) {
     minSessionMins: shift.min_session_minutes,
     sessionCooldownMins: shift.session_cooldown_minutes,
     maxSessionsPerDay: shift.max_sessions_per_day,
+    employeeCount: assignedEmployees.length,
   };
 }
 
 async function listShifts(orgId) {
   const shifts = await scopedModel(Shift, orgId).findAll({
+    include: [
+      {
+        model: Employee,
+        as: 'employees',
+        attributes: ['id'],
+        required: false,
+      },
+    ],
     order: [['created_at', 'DESC']],
   });
 
   return {
     shifts: shifts.map(mapShift),
+  };
+}
+
+async function getShiftById(orgId, id) {
+  const shift = await Shift.findOne({
+    where: {
+      id,
+      org_id: orgId,
+    },
+    include: [
+      {
+        model: Employee,
+        as: 'employees',
+        attributes: ['id'],
+        required: false,
+      },
+    ],
+  });
+
+  if (!shift) {
+    const error = new Error('Shift not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return mapShift(shift);
+}
+
+async function listShiftEmployees(orgId, id) {
+  await getShiftById(orgId, id);
+
+  const employees = await Employee.findAll({
+    where: {
+      org_id: orgId,
+      shift_id: id,
+    },
+    attributes: ['id', 'name', 'email', 'emp_code', 'role', 'is_active', 'branch_id', 'department_id'],
+    include: [
+      { model: Department, as: 'department', attributes: ['id', 'name'], required: false },
+    ],
+    order: [['name', 'ASC']],
+  });
+
+  return {
+    employees: employees.map((employee) => ({
+      id: employee.id,
+      name: employee.name,
+      email: employee.email,
+      empCode: employee.emp_code,
+      role: employee.role,
+      status: employee.is_active ? 'active' : 'inactive',
+      departmentId: employee.department_id,
+      departmentName: employee.department ? employee.department.name : null,
+    })),
+    total: employees.length,
   };
 }
 
@@ -87,6 +155,18 @@ async function updateShift(orgId, id, payload) {
     max_sessions_per_day: payload.maxSessionsPerDay ?? shift.max_sessions_per_day,
   });
 
+  await notifyOrgRoles(orgId, ['admin', 'manager'], {
+    type: 'shift_changed',
+    title: 'Shift updated',
+    body: `${shift.name} shift timing or rules were updated.`,
+    actionUrl: '/shifts',
+    data: {
+      shift_id: shift.id,
+      priority: 'normal',
+      status: 'completed',
+    },
+  });
+
   return mapShift(shift);
 }
 
@@ -105,12 +185,28 @@ async function deleteShift(orgId, id) {
     throw error;
   }
 
+  const employeeCount = await Employee.count({
+    where: {
+      org_id: orgId,
+      shift_id: id,
+    },
+  });
+
+  if (employeeCount > 0) {
+    const error = new Error(`Cannot delete shift while ${employeeCount} employee(s) are assigned`);
+    error.code = 'SHIFT_IN_USE';
+    error.statusCode = 409;
+    throw error;
+  }
+
   await shift.destroy();
   return true;
 }
 
 module.exports = {
   listShifts,
+  getShiftById,
+  listShiftEmployees,
   createShift,
   updateShift,
   deleteShift,

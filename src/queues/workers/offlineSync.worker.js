@@ -1,16 +1,32 @@
 const { offlineSync } = require('../index');
+const attendanceService = require('../../modules/attendance/attendance.service');
 
 let workerRegistered = false;
 
 async function processOfflineSync(job) {
   const { orgId = null, empId = null, records = [] } = job.data || {};
 
-  return {
-    synced: Array.isArray(records) ? records.length : 0,
+  if (!orgId || !empId || !Array.isArray(records) || records.length === 0) {
+    return {
+      synced: 0,
+      orgId,
+      empId,
+      syncedAt: new Date().toISOString(),
+      skipped: true,
+      reason: 'invalid_payload',
+    };
+  }
+
+  return attendanceService.syncOffline({
     orgId,
     empId,
-    syncedAt: new Date().toISOString(),
-  };
+    body: { records },
+    req: {
+      employee: { id: empId, orgId, role: 'employee' },
+      ip: null,
+      headers: {},
+    },
+  });
 }
 
 function registerOfflineSyncWorker() {

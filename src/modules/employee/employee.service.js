@@ -8,6 +8,16 @@ const { hashValue } = require('../../utils/auth');
 const { notification } = require('../../queues');
 
 const BULK_UPLOAD_MAX_ROWS = 500;
+const DEFAULT_NOTIFICATION_PREFERENCES = {
+  leave_approved: true,
+  leave_rejected: true,
+  late_marked: true,
+  absent_marked: true,
+  regularisation_approved: true,
+  regularisation_rejected: true,
+  checkout_reminder: true,
+  announcements: true,
+};
 
 function getTenantEmployeeWhere(orgId, extraWhere = {}) {
   return {
@@ -127,6 +137,8 @@ async function generateEmpCode(orgId, orgSlug) {
 }
 
 function mapEmployee(employee) {
+  const hasLocalFaceEmbedding = Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length > 0;
+
   return {
     id: employee.id,
     name: employee.name,
@@ -141,8 +153,69 @@ function mapEmployee(employee) {
     departmentName: employee.department?.name || null,
     shiftId: employee.shift_id,
     shiftName: employee.shift?.name || null,
-    faceEnrolled: Boolean(employee.is_face_enrolled || employee.face_embedding_id || employee.face_embedding_local),
+    leaveBalance: employee.leave_balance || {},
+    faceEnrolled: Boolean(employee.is_face_enrolled || employee.face_embedding_id || hasLocalFaceEmbedding),
+    registeredFaceUrl: employee.registered_face_url || null,
     requiresPasswordChange: !employee.password_changed,
+    notificationPreferences: {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      ...(employee.notification_preferences || {}),
+    },
+  };
+}
+
+async function getOwnNotificationPreferences(orgId, employeeId) {
+  const employee = await Employee.findOne({
+    where: getTenantEmployeeWhere(orgId, { id: employeeId }),
+    attributes: ['id', 'notification_preferences'],
+  });
+
+  if (!employee) {
+    const error = new Error('Employee not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return {
+    preferences: {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      ...(employee.notification_preferences || {}),
+    },
+  };
+}
+
+async function updateOwnNotificationPreferences(orgId, employeeId, preferences = {}) {
+  const employee = await Employee.findOne({
+    where: getTenantEmployeeWhere(orgId, { id: employeeId }),
+    attributes: ['id', 'notification_preferences'],
+  });
+
+  if (!employee) {
+    const error = new Error('Employee not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const allowedKeys = new Set(['enabled', 'push', ...Object.keys(DEFAULT_NOTIFICATION_PREFERENCES)]);
+  const sanitized = Object.entries(preferences).reduce((accumulator, [key, value]) => {
+    if (allowedKeys.has(key) && typeof value === 'boolean') {
+      accumulator[key] = value;
+    }
+    return accumulator;
+  }, {});
+
+  const nextPreferences = {
+    ...DEFAULT_NOTIFICATION_PREFERENCES,
+    ...(employee.notification_preferences || {}),
+    ...sanitized,
+  };
+
+  await employee.update({ notification_preferences: nextPreferences });
+
+  return {
+    preferences: nextPreferences,
   };
 }
 
@@ -166,6 +239,28 @@ async function listEmployees(orgId, query) {
 
   if (query.status === 'inactive') {
     where.is_active = false;
+  }
+
+  if (query.face === 'missing') {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      { [Op.or]: [{ is_face_enrolled: false }, { is_face_enrolled: null }] },
+      { [Op.or]: [{ face_embedding_id: null }, { face_embedding_id: '' }] },
+      { face_embedding_local: null },
+    ];
+  }
+
+  if (query.face === 'enrolled') {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      {
+        [Op.or]: [
+          { is_face_enrolled: true },
+          { face_embedding_id: { [Op.ne]: null } },
+          { face_embedding_local: { [Op.ne]: null } },
+        ],
+      },
+    ];
   }
 
   if (query.search) {
@@ -263,6 +358,23 @@ async function createEmployee(orgId, organisation, payload) {
     },
     {
       jobId: `send_welcome_email_${employee.id}`,
+      removeOnComplete: true,
+    }
+  );
+
+  await notification.add(
+    'send_push',
+    {
+      orgId,
+      empIds: [employee.id],
+      type: 'new_employee_onboarded',
+      title: 'Welcome to AttendEase',
+      body: `${organisation.name} added you as an employee. Complete your profile and face enrollment to start marking attendance.`,
+      actionUrl: 'attendease://profile',
+      data: { employee_id: employee.id },
+    },
+    {
+      jobId: `new_employee_onboarded_${employee.id}`,
       removeOnComplete: true,
     }
   );
@@ -438,6 +550,8 @@ module.exports = {
   BULK_UPLOAD_MAX_ROWS,
   listEmployees,
   getEmployeeById,
+  getOwnNotificationPreferences,
+  updateOwnNotificationPreferences,
   createEmployee,
   updateEmployee,
   deleteEmployee,

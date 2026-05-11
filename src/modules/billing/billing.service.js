@@ -71,28 +71,205 @@ function getBillingSettings(organisation) {
   return organisation.settings?.billing || { payments: [] };
 }
 
-function normalizeInvoice(payment, fallback = {}) {
+function normalizeInvoice(payment = {}, fallback = {}) {
+  const source = payment || {};
+  const date = source.date || fallback.date;
+  const dueDate = source.dueDate || fallback.dueDate;
+  const status = source.status || fallback.status || 'paid';
+
   return {
-    id: payment.invoiceId || fallback.id,
-    invoiceNumber: payment.invoiceNumber || fallback.invoiceNumber,
-    amount: Number(payment.amount || fallback.amount || 0),
-    currency: payment.currency || fallback.currency || 'INR',
-    date: payment.date || fallback.date,
-    dueDate: payment.dueDate || fallback.dueDate,
-    status: payment.status || fallback.status || 'paid',
-    paidAt: payment.paidAt || null,
-    employeeCount: Number(payment.employeeCount || fallback.employeeCount || 0),
-    plan: payment.plan || fallback.plan || 'trial',
-    planLabel: payment.planLabel || fallback.planLabel || getPlanLabel(payment.plan || fallback.plan),
-    period: payment.period || fallback.period || null,
-    razorpayOrderId: payment.razorpayOrderId || null,
-    razorpayPaymentId: payment.razorpayPaymentId || null,
+    id: source.invoiceId || fallback.id,
+    invoiceNumber: source.invoiceNumber || fallback.invoiceNumber,
+    amount: Number(source.amount || fallback.amount || 0),
+    currency: source.currency || fallback.currency || 'INR',
+    date,
+    dueDate,
+    status,
+    paidAt: source.paidAt || null,
+    employeeCount: Number(source.employeeCount || fallback.employeeCount || 0),
+    plan: source.plan || fallback.plan || 'trial',
+    planLabel: source.planLabel || fallback.planLabel || getPlanLabel(source.plan || fallback.plan),
+    period: source.period || fallback.period || null,
+    razorpayOrderId: source.razorpayOrderId || null,
+    razorpayPaymentId: source.razorpayPaymentId || null,
+    isCurrent: Boolean(source.isCurrent || fallback.isCurrent),
+    isOverdue: status !== 'paid' && dueDate ? new Date(dueDate).getTime() < Date.now() : false,
   };
+}
+
+function paymentRecordToInvoice(record, fallback = {}) {
+  const invoiceId = record.invoice_id;
+  const match = /^inv-(.+)-(\d{4}-\d{2})$/.exec(invoiceId || '');
+  const monthKey = fallback.period?.key || match?.[2] || getMonthKey(record.created_at || new Date());
+  const periodStart = fallback.period?.start || `${monthKey}-01T00:00:00.000Z`;
+  const periodEnd =
+    fallback.period?.end ||
+    getPeriodEnd(new Date(`${monthKey}-01T00:00:00.000Z`)).toISOString();
+  const dueDate = fallback.dueDate || getDueDate(new Date(`${monthKey}-01T00:00:00.000Z`)).toISOString();
+  const orgId = fallback.orgId || match?.[1] || record.org_id;
+
+  return normalizeInvoice(
+    {
+      invoiceId,
+      invoiceNumber: fallback.invoiceNumber || formatInvoiceNumber(orgId, monthKey),
+      amount: Number(record.amount_paise || 0) / 100,
+      currency: record.currency || 'INR',
+      date: fallback.date || periodStart,
+      dueDate,
+      status: record.status === 'verified' ? 'paid' : record.status || 'paid',
+      paidAt: record.created_at ? record.created_at.toISOString() : null,
+      employeeCount: fallback.employeeCount,
+      plan: fallback.plan,
+      planLabel: fallback.planLabel,
+      period: {
+        key: monthKey,
+        start: periodStart,
+        end: periodEnd,
+      },
+      razorpayOrderId: record.razorpay_order_id,
+      razorpayPaymentId: record.razorpay_payment_id,
+    },
+    fallback
+  );
+}
+
+function formatDisplayDate(value) {
+  if (!value) {
+    return '-';
+  }
+
+  return new Date(value).toLocaleDateString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+}
+
+function formatDisplayAmount(amount, currency = 'INR') {
+  return `${currency} ${Number(amount || 0).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderInvoiceHtml({ invoice, organisation }) {
+  const period = invoice.period || {};
+  const lineAmount = Number(invoice.amount || 0);
+  const statusLabel = String(invoice.status || 'due').toUpperCase();
+  const planLabel = invoice.planLabel || getPlanLabel(invoice.plan);
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(invoice.invoiceNumber)} - AttendEase Invoice</title>
+  <style>
+    body { margin: 0; background: #f4f6f8; color: #111827; font-family: Arial, sans-serif; }
+    .page { max-width: 820px; margin: 32px auto; background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; }
+    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #111827; padding-bottom: 24px; }
+    .brand { font-size: 28px; font-weight: 700; letter-spacing: 0; }
+    .muted { color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .invoice-title { text-align: right; }
+    .invoice-title h1 { margin: 0 0 8px; font-size: 24px; }
+    .status { display: inline-block; padding: 6px 10px; border-radius: 4px; background: #ecfdf3; color: #027a48; font-weight: 700; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 28px 0; }
+    .section-title { font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; margin-bottom: 8px; }
+    .box { border: 1px solid #e5e7eb; padding: 16px; border-radius: 6px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th { background: #f9fafb; text-align: left; color: #374151; font-size: 12px; text-transform: uppercase; }
+    th, td { padding: 12px; border-bottom: 1px solid #e5e7eb; }
+    .right { text-align: right; }
+    .total { display: flex; justify-content: flex-end; margin-top: 24px; }
+    .total-box { width: 320px; border: 1px solid #111827; border-radius: 6px; overflow: hidden; }
+    .total-row { display: flex; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+    .total-row.final { background: #111827; color: #ffffff; font-weight: 700; border-bottom: 0; }
+    .footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280; }
+    @media print { body { background: #ffffff; } .page { margin: 0; border: 0; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="header">
+      <div>
+        <div class="brand">AttendEase</div>
+        <div class="muted">Employee attendance management platform</div>
+      </div>
+      <div class="invoice-title">
+        <h1>Invoice</h1>
+        <div class="muted">${escapeHtml(invoice.invoiceNumber)}</div>
+        <div class="status">${escapeHtml(statusLabel)}</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="box">
+        <div class="section-title">Bill To</div>
+        <strong>${escapeHtml(organisation.name)}</strong>
+        <div class="muted">Organisation ID: ${escapeHtml(organisation.id)}</div>
+      </div>
+      <div class="box">
+        <div class="section-title">Invoice Details</div>
+        <div class="muted">Invoice Date: ${escapeHtml(formatDisplayDate(invoice.date))}</div>
+        <div class="muted">Due Date: ${escapeHtml(formatDisplayDate(invoice.dueDate))}</div>
+        <div class="muted">Period: ${escapeHtml(formatDisplayDate(period.start))} - ${escapeHtml(formatDisplayDate(period.end))}</div>
+      </div>
+    </section>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="right">Employees</th>
+          <th class="right">Plan</th>
+          <th class="right">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>AttendEase ${escapeHtml(planLabel)} subscription</td>
+          <td class="right">${escapeHtml(invoice.employeeCount)}</td>
+          <td class="right">${escapeHtml(planLabel)}</td>
+          <td class="right">${escapeHtml(formatDisplayAmount(lineAmount, invoice.currency))}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <section class="total">
+      <div class="total-box">
+        <div class="total-row"><span>Subtotal</span><span>${escapeHtml(formatDisplayAmount(lineAmount, invoice.currency))}</span></div>
+        <div class="total-row"><span>Tax</span><span>${escapeHtml(formatDisplayAmount(0, invoice.currency))}</span></div>
+        <div class="total-row final"><span>Total</span><span>${escapeHtml(formatDisplayAmount(lineAmount, invoice.currency))}</span></div>
+      </div>
+    </section>
+
+    <section class="footer">
+      This invoice is generated electronically by AttendEase. Trial invoices may show a zero amount and paid status because no payment is required.
+    </section>
+  </main>
+</body>
+</html>`;
 }
 
 async function buildBillingSnapshot(orgId) {
   const organisation = await getOrganisation(orgId);
-  const employeeCount = await getEmployeeCount(orgId);
+  const [employeeCount, paymentRecords] = await Promise.all([
+    getEmployeeCount(orgId),
+    PaymentRecord.findAll({
+      where: {
+        org_id: orgId,
+      },
+      order: [['created_at', 'DESC']],
+    }),
+  ]);
   const settings = getBillingSettings(organisation);
   const payments = Array.isArray(settings.payments) ? settings.payments : [];
   const monthKey = getMonthKey();
@@ -104,9 +281,30 @@ async function buildBillingSnapshot(orgId) {
   const invoiceId = `inv-${organisation.id}-${monthKey}`;
   const invoiceNumber = formatInvoiceNumber(organisation.id, monthKey);
 
-  const currentPayment = payments.find((payment) => payment.invoiceId === invoiceId);
+  const currentPayment =
+    payments.find((payment) => payment.invoiceId === invoiceId) ||
+    paymentRecords.find((record) => record.invoice_id === invoiceId);
   const currentInvoice = normalizeInvoice(
-    currentPayment,
+    currentPayment && currentPayment.invoice_id
+      ? paymentRecordToInvoice(currentPayment, {
+          id: invoiceId,
+          invoiceNumber,
+          amount,
+          currency: 'INR',
+          date: periodStart.toISOString(),
+          dueDate: dueDate.toISOString(),
+          status: amount === 0 ? 'paid' : 'due',
+          employeeCount,
+          plan,
+          planLabel: getPlanLabel(plan),
+          isCurrent: true,
+          period: {
+            key: monthKey,
+            start: periodStart.toISOString(),
+            end: periodEnd.toISOString(),
+          },
+        })
+      : currentPayment,
     {
       id: invoiceId,
       invoiceNumber,
@@ -118,6 +316,7 @@ async function buildBillingSnapshot(orgId) {
       employeeCount,
       plan,
       planLabel: getPlanLabel(plan),
+      isCurrent: true,
       period: {
         key: monthKey,
         start: periodStart.toISOString(),
@@ -126,12 +325,31 @@ async function buildBillingSnapshot(orgId) {
     }
   );
 
-  const historicalInvoices = payments
-    .filter((payment) => payment.invoiceId !== invoiceId)
+  const legacyInvoices = payments
+    .filter((payment) => payment && payment.invoiceId !== invoiceId)
     .map((payment) => normalizeInvoice(payment))
     .sort((a, b) => new Date(b.date || b.paidAt || 0) - new Date(a.date || a.paidAt || 0));
 
-  const invoices = [currentInvoice, ...historicalInvoices].sort(
+  const paymentRecordInvoices = paymentRecords
+    .filter((record) => record.invoice_id !== invoiceId)
+    .map((record) =>
+      paymentRecordToInvoice(record, {
+        orgId,
+        plan,
+        planLabel: getPlanLabel(plan),
+      })
+    );
+
+  const historicalById = new Map();
+  [...paymentRecordInvoices, ...legacyInvoices].forEach((invoice) => {
+    if (!invoice?.id || historicalById.has(invoice.id)) {
+      return;
+    }
+
+    historicalById.set(invoice.id, invoice);
+  });
+
+  const invoices = [currentInvoice, ...historicalById.values()].sort(
     (a, b) => new Date(b.date || b.paidAt || 0) - new Date(a.date || a.paidAt || 0)
   );
 
@@ -196,13 +414,14 @@ async function getCurrentPlan(orgId) {
     monthlyAmount: currentInvoice.amount,
     currency: 'INR',
     trialEndsAt,
+    currentInvoice,
     features,
   };
 }
 
 async function getInvoices(orgId) {
-  const { invoices } = await buildBillingSnapshot(orgId);
-  return { invoices };
+  const { invoices, currentInvoice } = await buildBillingSnapshot(orgId);
+  return { invoices, currentInvoice };
 }
 
 async function createInvoiceOrder(orgId, invoiceId) {
@@ -412,8 +631,8 @@ async function verifyInvoicePayment(orgId, payload, idempotencyKey = null) {
       return {
         invoice: normalizeInvoice({
           invoiceId: existing?.invoice_id,
-          amount: Math.round(existing?.amount_paise / 100),
-          paidAt: existing?.created_at.toISOString(),
+          amount: existing ? Math.round(existing.amount_paise / 100) : 0,
+          paidAt: existing?.created_at ? existing.created_at.toISOString() : null,
           status: 'paid',
         }),
         verified: true,
@@ -436,17 +655,9 @@ async function downloadInvoice(orgId, invoiceId) {
 
   return {
     invoice,
-    filename: `${invoice.invoiceNumber}.txt`,
-    content: [
-      `AttendEase Invoice`,
-      `Organisation: ${organisation.name}`,
-      `Invoice: ${invoice.invoiceNumber}`,
-      `Amount: INR ${invoice.amount}`,
-      `Status: ${invoice.status}`,
-      `Date: ${invoice.date}`,
-      `Due Date: ${invoice.dueDate}`,
-      invoice.paidAt ? `Paid At: ${invoice.paidAt}` : null,
-    ].filter(Boolean).join('\n'),
+    filename: `${invoice.invoiceNumber}.html`,
+    contentType: 'text/html; charset=utf-8',
+    content: renderInvoiceHtml({ invoice, organisation }),
   };
 }
 

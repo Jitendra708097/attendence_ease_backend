@@ -5,8 +5,8 @@ const { faceEnrollment } = require('../../queues');
 const { compareEmbeddings, isValidEmbedding, normalizeEmbedding } = require('./face.localModel');
 const { verifyWithRekognition, enrollWithRekognition, deleteFromRekognition } = require('./face.cloudService');
 const { generateFaceEmbedding } = require('./face.tensorflowService');
-const { uploadEnrollmentSelfie, deleteEnrollmentSelfie } = require('./face.storageService');
-const { sendPush } = require('../notification/notification.service');
+const { uploadEnrollmentSelfie } = require('./face.storageService');
+const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
 
 const THRESHOLDS = {
   probationary: 0.88,
@@ -124,8 +124,7 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
   }
   
   let normalizedEmbedding = Array.isArray(embedding) ? normalizeEmbedding(embedding) : null;
-  const hasLocalEmbedding =
-    Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
+  const hasLocalEmbedding = Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128;
   const threshold = getThreshold(employee);
   const dedupKey = getDedupKey(orgId, empId);
   const sessionKey = getSessionKey(orgId, empId);
@@ -360,6 +359,7 @@ async function processEnrollmentJob(jobData) {
     face_embedding_local: resolvedEmbedding,
     face_embedding_id: faceId,
     face_enrolled_at: new Date(),
+    registered_face_url: uploadedSelfie ? uploadedSelfie.secureUrl : employee.registered_face_url,
     is_face_enrolled: true,
   });
 
@@ -374,10 +374,6 @@ async function processEnrollmentJob(jobData) {
     24 * 60 * 60
   );
 
-  if (uploadedSelfie && uploadedSelfie.publicId) {
-    await deleteEnrollmentSelfie(uploadedSelfie.publicId);
-  }
-
   await sendPush(
     [empId],
     {
@@ -385,6 +381,26 @@ async function processEnrollmentJob(jobData) {
       title: 'Face recognition setup complete',
       body: 'Face recognition setup complete. You can now use face verification for attendance.',
       actionUrl: '/home',
+    }
+  );
+
+  await notifyOrgRoles(
+    orgId,
+    ['admin', 'manager'],
+    {
+      type: 'face_enrollment',
+      title: 'Employee face enrolled',
+      body: `${employee.name} completed face recognition setup.`,
+      actionUrl: '/employees',
+      data: {
+        employee_id: employee.id,
+        emp_id: employee.id,
+        priority: 'low',
+        status: 'completed',
+      },
+    },
+    {
+      excludeEmployeeIds: [empId],
     }
   );
 
@@ -418,6 +434,7 @@ async function getEnrollmentStatus({ requester, orgId, empId }) {
     enrolled: isEnrolled,
     status: isEnrolled ? 'enrolled' : parsedStatus ? parsedStatus.status : 'not_enrolled',
     faceId: employee.face_embedding_id || null,
+    registeredFaceUrl: employee.registered_face_url || null,
     localEmbeddingAvailable: hasLocalEmbedding,
     updatedAt: parsedStatus ? parsedStatus.updatedAt : null,
   };
@@ -434,6 +451,7 @@ async function resetEnrollment({ orgId, empId }) {
     face_embedding_local: null,
     face_embedding_id: null,
     face_enrolled_at: null,
+    registered_face_url: null,
     is_face_enrolled: false,
   });
 

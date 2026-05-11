@@ -132,6 +132,57 @@ function isWithinRadius(point, center, radiusMeters = 200) {
   return distance <= radiusMeters;
 }
 
+function metersPerDegreeLng(lat) {
+  return 111320 * Math.cos((Number(lat) * Math.PI) / 180);
+}
+
+function pointToSegmentDistanceMeters(point, start, end) {
+  const latScale = 111320;
+  const lngScale = metersPerDegreeLng(point.lat || start.lat || end.lat || 0) || 1;
+
+  const px = point.lng * lngScale;
+  const py = point.lat * latScale;
+  const ax = start.lng * lngScale;
+  const ay = start.lat * latScale;
+  const bx = end.lng * lngScale;
+  const by = end.lat * latScale;
+  const dx = bx - ax;
+  const dy = by - ay;
+
+  if (dx === 0 && dy === 0) {
+    return Math.hypot(px - ax, py - ay);
+  }
+
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  const closestX = ax + t * dx;
+  const closestY = ay + t * dy;
+
+  return Math.hypot(px - closestX, py - closestY);
+}
+
+function distanceToPolygonMeters(point, polygon = []) {
+  const normalizedPoint = normalizePoint(point);
+  const normalizedPolygon = normalizePolygon(polygon);
+
+  if (!normalizedPoint || normalizedPolygon.length < 3) {
+    return Infinity;
+  }
+
+  if (isInsidePolygon(normalizedPoint, normalizedPolygon)) {
+    return 0;
+  }
+
+  let minDistance = Infinity;
+  for (let i = 0, j = normalizedPolygon.length - 1; i < normalizedPolygon.length; j = i++) {
+    minDistance = Math.min(
+      minDistance,
+      pointToSegmentDistanceMeters(normalizedPoint, normalizedPolygon[j], normalizedPolygon[i])
+    );
+  }
+
+  return minDistance;
+}
+
 /**
  * Main entry - uses polygon if defined, falls back to circle
  * @param {{lat: number, lng: number}} employeeGPS
@@ -154,5 +205,6 @@ function checkGeofence(employeeGPS, branch) {
 module.exports = {
   isInsidePolygon,
   isWithinRadius,
+  distanceToPolygonMeters,
   checkGeofence,
 };

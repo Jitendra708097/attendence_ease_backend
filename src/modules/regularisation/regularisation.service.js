@@ -116,6 +116,10 @@ async function createRegularisation({ orgId, empId, body }) {
     throw createError('HTTP_404', 'Attendance record not found for the selected date', 404);
   }
 
+  if (['on_leave', 'holiday', 'weekend'].includes(attendance.status)) {
+    throw createError('REG_006', 'This attendance status cannot be regularised', 400);
+  }
+
   const existing = await Regularisation.findOne({
     where: {
       org_id: orgId,
@@ -166,6 +170,10 @@ async function createRegularisation({ orgId, empId, body }) {
     evidence_url: evidenceUrl,
   });
 
+  await attendance.update({
+    status: 'regularisation_pending',
+  });
+
   const hydrated = await Regularisation.findOne({
     where: {
       id: record.id,
@@ -180,7 +188,7 @@ async function createRegularisation({ orgId, empId, body }) {
       {
         model: Attendance,
         as: 'attendance',
-        attributes: ['id', 'first_check_in', 'last_check_out'],
+        attributes: ['id', 'date', 'first_check_in', 'last_check_out', 'total_worked_minutes', 'shift_id', 'status'],
       },
     ],
   });
@@ -193,6 +201,7 @@ async function createRegularisation({ orgId, empId, body }) {
       title: 'New regularisation request',
       body: `${hydrated.employee ? hydrated.employee.name : 'An employee'} submitted a regularisation request for ${date}.`,
       actionUrl: '/regularisations',
+      data: { regularisation_id: hydrated.id, attendance_id: hydrated.attendance_id },
     },
     {
       excludeEmployeeIds: [empId],
@@ -204,11 +213,14 @@ async function createRegularisation({ orgId, empId, body }) {
 
 async function listPendingRegularisations({ orgId, role, employeeId, query = {} }) {
   const statusFilter = String(query.status || '').trim();
+  const requestId = query.requestId || query.regularisationId || query.id;
   const where = {
     org_id: orgId,
   };
 
-  if (statusFilter) {
+  if (requestId) {
+    where.id = requestId;
+  } else if (statusFilter) {
     where.status = statusFilter;
   } else if (role === 'manager') {
     where.status = 'pending';
@@ -245,7 +257,7 @@ async function listPendingRegularisations({ orgId, role, employeeId, query = {} 
   };
 }
 
-async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, date) {
+async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, date, regularisationId) {
   await notifyOrgRoles(
     orgId,
     ['admin'],
@@ -254,6 +266,7 @@ async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, d
       title: 'Regularisation awaiting approval',
       body: `${employeeName || 'An employee'} regularisation for ${date} is ready for final review.`,
       actionUrl: '/regularisations',
+      data: { regularisation_id: regularisationId },
     },
     {
       excludeEmployeeIds: [excludeEmployeeId],
@@ -292,7 +305,7 @@ async function managerApproveRegularisation({ orgId, regularisationId, approverI
     manager_approved_at: new Date(),
   });
 
-  await notifyAdminsForApproval(orgId, record.emp_id, record.employee && record.employee.name, record.date);
+  await notifyAdminsForApproval(orgId, record.emp_id, record.employee && record.employee.name, record.date, record.id);
 
   return toDto(record);
 }
@@ -397,7 +410,8 @@ async function approveRegularisation({ orgId, regularisationId, approverId }) {
       type: 'regularisation_approved',
       title: 'Regularisation approved',
       body: `Your regularisation request for ${record.date} has been approved.`,
-      actionUrl: '/history',
+      actionUrl: `attendease://regularise/${record.id}`,
+      data: { regularisation_id: record.id, attendance_id: record.attendance_id },
     }
   );
 
@@ -438,6 +452,29 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
     rejection_reason: rejectionReason || null,
   });
 
+  if (record.attendance && record.attendance.status === 'regularisation_pending') {
+    const [shift, organisation] = await Promise.all([
+      Shift.findOne({ where: { id: record.attendance.shift_id, org_id: orgId } }),
+      Organisation.findOne({ where: { id: orgId }, attributes: ['timezone'] }),
+    ]);
+    const statusState = shift
+      ? computeAttendanceStatus(
+          {
+            date: record.attendance.date,
+            first_check_in: record.attendance.first_check_in,
+            last_check_out: record.attendance.last_check_out,
+            total_worked_minutes: record.attendance.total_worked_minutes || 0,
+          },
+          shift,
+          null,
+          organisation?.timezone || 'UTC'
+        )
+      : null;
+    await record.attendance.update({
+      status: statusState ? statusState.status : record.attendance.last_check_out ? 'incomplete' : 'pending',
+    });
+  }
+
   await sendPush(
     [record.emp_id],
     {
@@ -446,7 +483,8 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
       body: rejectionReason
         ? `Your regularisation request for ${record.date} was rejected: ${rejectionReason}`
         : `Your regularisation request for ${record.date} was rejected.`,
-      actionUrl: '/history',
+      actionUrl: `attendease://regularise/${record.id}`,
+      data: { regularisation_id: record.id, attendance_id: record.attendance_id },
     }
   );
 

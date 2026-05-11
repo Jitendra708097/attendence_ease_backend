@@ -1,11 +1,17 @@
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { Branch, Department, Employee, RefreshToken, Organisation, Shift } = require('../../models');
+const { Branch, Department, Employee, ImpersonationSession, RefreshToken, Organisation, Shift } = require('../../models');
 const { compareValue, hashValue, signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/auth');
 const { isEmailConfigured, sendPasswordResetOtpEmail } = require('../notification/email.service');
+const { redisClient } = require('../../config/redis');
 
 const PASSWORD_RESET_OTP_EXPIRY_MINUTES = 10;
 const PASSWORD_RESET_RESEND_COOLDOWN_MS = 60 * 1000;
+const IMPERSONATION_HANDOFF_KEY_PREFIX = 'impersonation_handoff:';
+
+function getImpersonationHandoffKey(code) {
+  return `${IMPERSONATION_HANDOFF_KEY_PREFIX}${code}`;
+}
 
 function buildEmployeeProfile(employee) {
   const requiresPasswordChange = typeof employee.password_changed === 'boolean' ? !employee.password_changed : false;
@@ -24,6 +30,8 @@ function buildEmployeeProfile(employee) {
     shiftName: employee.shift?.name || null,
     branchName: employee.branch?.name || null,
     joinedAt: employee.created_at || null,
+    profilePhotoUrl: employee.registered_face_url || null,
+    registeredFaceUrl: employee.registered_face_url || null,
     requiresPasswordChange,
     isFirstLogin: requiresPasswordChange,
     faceEnrolled,
@@ -95,6 +103,7 @@ async function login({ email, password, deviceId }) {
       'password_changed',
       'face_embedding_id',
       'face_embedding_local',
+      'registered_face_url',
       'created_at',
       'is_active',
       'deleted_at',
@@ -108,7 +117,7 @@ async function login({ email, password, deviceId }) {
       {
         model: Organisation,
         as: 'organisation',
-        attributes: ['id', 'name', 'slug'],
+        attributes: ['id', 'name', 'slug', 'is_active', 'cancelled_at'],
       },
       {
         model: Branch,
@@ -145,6 +154,13 @@ async function login({ email, password, deviceId }) {
     throw error;
   }
 
+  if (employee.role !== 'superadmin' && (!employee.organisation?.is_active || employee.organisation?.cancelled_at)) {
+    const error = new Error('Organisation account is suspended or inactive');
+    error.code = 'AUTH_007';
+    error.statusCode = 403;
+    throw error;
+  }
+
   await revokeSessionsForOtherDevices(employee.id, deviceId || null);
   const tokens = await issueTokenPair(employee, { deviceId });
 
@@ -152,6 +168,72 @@ async function login({ email, password, deviceId }) {
     ...tokens,
     employee: buildEmployeeProfile(employee),
   };
+}
+
+async function exchangeImpersonationCode({ code }) {
+  const normalizedCode = String(code || '').trim();
+
+  if (!normalizedCode) {
+    const error = new Error('Impersonation handoff code is required');
+    error.code = 'AUTH_021';
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const redisKey = getImpersonationHandoffKey(normalizedCode);
+  const rawPayload = await redisClient.get(redisKey);
+  await redisClient.del(redisKey);
+
+  if (!rawPayload) {
+    const error = new Error('Impersonation handoff expired or already used');
+    error.code = 'AUTH_019';
+    error.statusCode = 401;
+    throw error;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawPayload);
+  } catch (_) {
+    const error = new Error('Invalid impersonation handoff');
+    error.code = 'AUTH_020';
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (!payload?.accessToken || !payload?.user?.isImpersonated || !payload?.user?.impersonationSessionId) {
+    const error = new Error('Invalid impersonation handoff');
+    error.code = 'AUTH_020';
+    error.statusCode = 401;
+    throw error;
+  }
+
+  return payload;
+}
+
+async function exitImpersonationSession({ employee }) {
+  if (!employee?.isImpersonated || !employee.impersonationSessionId) {
+    const error = new Error('No active impersonation session');
+    error.code = 'AUTH_022';
+    error.statusCode = 400;
+    throw error;
+  }
+
+  await ImpersonationSession.update(
+    {
+      ended_at: new Date(),
+      ended_by: employee.impersonatedBy || null,
+      end_reason: 'admin_portal_exit',
+    },
+    {
+      where: {
+        id: employee.impersonationSessionId,
+        ended_at: null,
+      },
+    }
+  );
+
+  return { ended: true, id: employee.impersonationSessionId };
 }
 
 async function refresh(refreshToken) {
@@ -170,12 +252,44 @@ async function refresh(refreshToken) {
       id: payload.id,
       org_id: payload.orgId, // ✅ Always enforce org_id
     },
+    include: [
+      {
+        model: Organisation,
+        as: 'organisation',
+        attributes: ['id', 'name', 'slug', 'is_active', 'cancelled_at'],
+      },
+      {
+        model: Branch,
+        as: 'branch',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+      {
+        model: Department,
+        as: 'department',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+      {
+        model: Shift,
+        as: 'shift',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+    ],
   });
 
   if (!employee) {
     const error = new Error('Invalid refresh token');
     error.code = 'AUTH_002';
     error.statusCode = 401;
+    throw error;
+  }
+
+  if (employee.role !== 'superadmin' && (!employee.organisation?.is_active || employee.organisation?.cancelled_at)) {
+    const error = new Error('Organisation account is suspended or inactive');
+    error.code = 'AUTH_007';
+    error.statusCode = 403;
     throw error;
   }
 
@@ -225,9 +339,14 @@ async function refresh(refreshToken) {
 
   await matchedToken.update({ status: 'used' });
 
-  return issueTokenPair(employee, {
+  const tokenPair = await issueTokenPair(employee, {
     deviceId: matchedToken.device_id,
   });
+
+  return {
+    ...tokenPair,
+    employee: buildEmployeeProfile(employee),
+  };
 }
 
 async function logout({ refreshToken, employeeId }) {
@@ -440,4 +559,13 @@ async function resetPassword({ email, otp, newPassword }) {
   };
 }
 
-module.exports = { login, refresh, logout, changePassword, forgotPassword, resetPassword };
+module.exports = {
+  login,
+  refresh,
+  logout,
+  changePassword,
+  forgotPassword,
+  resetPassword,
+  exchangeImpersonationCode,
+  exitImpersonationSession,
+};

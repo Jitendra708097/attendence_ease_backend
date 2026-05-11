@@ -28,7 +28,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       status: {
-        type: DataTypes.ENUM('present', 'absent', 'half_day', 'half_day_early', 'on_leave', 'holiday', 'weekend', 'not_marked'),
+        type: DataTypes.ENUM('pending', 'present', 'absent', 'half_day', 'half_day_early', 'on_leave', 'holiday', 'weekend', 'incomplete', 'not_marked', 'regularisation_pending'),
         defaultValue: 'not_marked',
       },
       first_check_in: DataTypes.DATE,
@@ -77,6 +77,7 @@ module.exports = (sequelize, DataTypes) => {
       face_match_score: DataTypes.DECIMAL(4, 3),
       face_match_source: DataTypes.STRING,
       checkout_grace_job_id: DataTypes.STRING,
+      client_record_id: DataTypes.UUID,
       is_finalised: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
@@ -98,6 +99,7 @@ module.exports = (sequelize, DataTypes) => {
       underscored: true,
       indexes: [
         { fields: ['org_id', 'emp_id', 'date'], unique: true },
+        { fields: ['org_id', 'client_record_id'], unique: true },
         { fields: ['org_id', 'date'] },
       ],
     }

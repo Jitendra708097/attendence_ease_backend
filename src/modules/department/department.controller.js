@@ -58,6 +58,24 @@ async function updateDepartment(req, res) {
   }
 }
 
+async function listDepartmentEmployees(req, res) {
+  try {
+    const data = await departmentService.listDepartmentEmployees(req.org_id, req.params.id);
+    return ok(res, data, 'Department employees fetched');
+  } catch (error) {
+    return fail(res, error.code || 'DEPT_014', error.message, error.details || [], error.statusCode || 404);
+  }
+}
+
+async function getDepartmentStats(req, res) {
+  try {
+    const data = await departmentService.getDepartmentStats(req.org_id, req.params.id);
+    return ok(res, data, 'Department stats fetched');
+  } catch (error) {
+    return fail(res, error.code || 'DEPT_015', error.message, error.details || [], error.statusCode || 404);
+  }
+}
+
 async function deleteDepartment(req, res) {
   try {
     await departmentService.deleteDepartment(req.org_id, req.params.id);
@@ -73,5 +91,7 @@ module.exports = {
   getDepartment,
   createDepartment,
   updateDepartment,
+  listDepartmentEmployees,
+  getDepartmentStats,
   deleteDepartment,
 };

@@ -7,6 +7,18 @@ async function login(req, res) {
     const data = await superadminService.login(req.body);
     return ok(res, data, 'Superadmin login successful');
   } catch (error) {
+    try {
+      await log(
+        null,
+        'superadmin.login_failed',
+        { type: 'superadmin_auth', id: String(req.body?.email || '').trim().toLowerCase() || null },
+        null,
+        { email: String(req.body?.email || '').trim().toLowerCase() || null, code: error.code || 'AUTH_001' },
+        req
+      );
+    } catch (_) {
+      // Audit write failure must not change the login failure response.
+    }
     return fail(res, error.code || 'AUTH_001', error.message, error.details || [], error.statusCode || 400);
   }
 }
@@ -47,6 +59,15 @@ async function listOrgs(req, res) {
     return ok(res, data, 'Organisations fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function previewOrgSlug(req, res) {
+  try {
+    const data = await superadminService.getOrgSlugPreview(req.query.name || req.query.q || '');
+    return ok(res, data, 'Organisation slug preview fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_047', error.message, error.details || [], error.statusCode || 400);
   }
 }
 
@@ -121,9 +142,39 @@ async function sendBillingAlert(req, res) {
   }
 }
 
+async function resendOrgInvite(req, res) {
+  try {
+    const data = await superadminService.resendOrgAdminInvite({
+      orgId: req.params.orgId,
+    });
+    await log(req.employee, 'ORG_INVITE_RESENT', { type: 'organisation', id: req.params.orgId }, null, data, req);
+    return ok(res, data, 'Organisation admin invite queued');
+  } catch (error) {
+    return fail(res, error.code || 'SA_042', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function updateOrgProfile(req, res) {
+  try {
+    const data = await superadminService.updateOrgProfile({
+      orgId: req.params.orgId,
+      payload: req.body,
+      actorId: req.employee.id,
+    });
+    await log(req.employee, 'ORG_PROFILE_UPDATED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
+    return ok(res, data.newValue, 'Organisation profile updated');
+  } catch (error) {
+    return fail(res, error.code || 'SA_044', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function suspendOrg(req, res) {
   try {
-    const data = await superadminService.suspendOrg({ orgId: req.params.orgId });
+    const data = await superadminService.suspendOrg({
+      orgId: req.params.orgId,
+      reason: req.body.reason,
+      actorId: req.employee.id,
+    });
     await log(req.employee, 'ORG_SUSPENDED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
     return ok(res, data.newValue, 'Organisation suspended');
   } catch (error) {
@@ -133,11 +184,59 @@ async function suspendOrg(req, res) {
 
 async function activateOrg(req, res) {
   try {
-    const data = await superadminService.activateOrg({ orgId: req.params.orgId });
+    const data = await superadminService.activateOrg({
+      orgId: req.params.orgId,
+      reason: req.body.reason,
+      actorId: req.employee.id,
+    });
     await log(req.employee, 'ORG_ACTIVATED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
     return ok(res, data.newValue, 'Organisation activated');
   } catch (error) {
     return fail(res, error.code || 'SA_006', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function cancelOrg(req, res) {
+  try {
+    const data = await superadminService.cancelOrg({
+      orgId: req.params.orgId,
+      reason: req.body.reason,
+      actorId: req.employee.id,
+    });
+    await log(req.employee, 'ORG_CANCELLED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
+    return ok(res, data.newValue, 'Organisation cancelled');
+  } catch (error) {
+    return fail(res, error.code || 'SA_047', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function addOrgNote(req, res) {
+  try {
+    const data = await superadminService.addOrgNote({
+      orgId: req.params.orgId,
+      note: req.body.note,
+      actorId: req.employee.id,
+      actorName: req.employee.name,
+    });
+    await log(req.employee, 'ORG_NOTE_ADDED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.note, req);
+    return ok(res, data.newValue, 'Organisation note added');
+  } catch (error) {
+    return fail(res, error.code || 'SA_047', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function transferOrgOwner(req, res) {
+  try {
+    const data = await superadminService.transferOrgOwner({
+      orgId: req.params.orgId,
+      employeeId: req.body.employeeId,
+      reason: req.body.reason,
+      actorId: req.employee.id,
+    });
+    await log(req.employee, 'ORG_OWNER_TRANSFERRED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
+    return ok(res, data.newValue, 'Organisation owner transferred');
+  } catch (error) {
+    return fail(res, error.code || 'SA_048', error.message, error.details || [], error.statusCode || 400);
   }
 }
 
@@ -146,6 +245,9 @@ async function changePlan(req, res) {
     const data = await superadminService.changePlan({
       orgId: req.params.orgId,
       plan: req.body.plan,
+      reason: req.body.reason,
+      effectiveDate: req.body.effectiveDate,
+      actorId: req.employee.id,
     });
     await log(req.employee, 'PLAN_CHANGED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
     return ok(res, data.newValue, 'Organisation plan updated');
@@ -159,6 +261,8 @@ async function extendTrial(req, res) {
     const data = await superadminService.extendTrial({
       orgId: req.params.orgId,
       extendByDays: req.body.extendByDays,
+      reason: req.body.reason,
+      actorId: req.employee.id,
     });
     await log(req.employee, 'TRIAL_EXTENDED', { type: 'organisation', id: req.params.orgId }, data.oldValue, data.newValue, req);
     return ok(res, data.newValue, 'Organisation trial extended');
@@ -169,7 +273,7 @@ async function extendTrial(req, res) {
 
 async function stats(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.stats, 'Platform stats fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_009', error.message, error.details || [], error.statusCode || 400);
@@ -178,7 +282,7 @@ async function stats(req, res) {
 
 async function dashboard(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.stats, 'Dashboard stats fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_009', error.message, error.details || [], error.statusCode || 400);
@@ -187,7 +291,7 @@ async function dashboard(req, res) {
 
 async function mrr(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.mrrTrend, 'MRR trend fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_010', error.message, error.details || [], error.statusCode || 400);
@@ -196,7 +300,7 @@ async function mrr(req, res) {
 
 async function growth(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.orgGrowth, 'Organisation growth fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_011', error.message, error.details || [], error.statusCode || 400);
@@ -205,7 +309,7 @@ async function growth(req, res) {
 
 async function alerts(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.alerts, 'Alerts fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_012', error.message, error.details || [], error.statusCode || 400);
@@ -214,7 +318,7 @@ async function alerts(req, res) {
 
 async function recentSignups(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats({ ...req.query, recentSignupsLimit: req.query.limit });
     return ok(res, data.recentSignups, 'Recent signups fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_013', error.message, error.details || [], error.statusCode || 400);
@@ -241,7 +345,7 @@ async function analyticsUsage(req, res) {
 
 async function analyticsRetention(req, res) {
   try {
-    const data = await superadminService.getAnalyticsRetention();
+    const data = await superadminService.getAnalyticsRetention(req.query);
     return ok(res, data, 'Retention analytics fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_031', error.message, error.details || [], error.statusCode || 400);
@@ -293,6 +397,17 @@ async function billingInvoices(req, res) {
   }
 }
 
+async function exportBillingInvoices(req, res) {
+  try {
+    const result = await superadminService.exportBillingInvoices(req.query);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return fail(res, error.code || 'SA_036', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function billingTopOrgs(req, res) {
   try {
     const data = await superadminService.getBillingTopOrgs(req.query);
@@ -304,7 +419,7 @@ async function billingTopOrgs(req, res) {
 
 async function health(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.health, 'Platform health fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_014', error.message, error.details || [], error.statusCode || 400);
@@ -313,7 +428,7 @@ async function health(req, res) {
 
 async function queues(req, res) {
   try {
-    const data = await superadminService.getStats();
+    const data = await superadminService.getStats(req.query);
     return ok(res, data.health.queues, 'Queue health fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_015', error.message, error.details || [], error.statusCode || 400);
@@ -322,8 +437,8 @@ async function queues(req, res) {
 
 async function failedJobs(req, res) {
   try {
-    const data = await superadminService.getStats();
-    return ok(res, { jobs: data.health.failedJobs }, 'Failed jobs fetched');
+    const data = await superadminService.getQueueSnapshot({ includeFailedJobs: true });
+    return ok(res, { jobs: data.failedJobs }, 'Failed jobs fetched');
   } catch (error) {
     return fail(res, error.code || 'SA_016', error.message, error.details || [], error.statusCode || 400);
   }
@@ -345,6 +460,9 @@ async function startImpersonation(req, res) {
       orgId: req.params.orgId || req.body.orgId,
       adminId: req.body.adminId || req.body.targetEmpId,
       reason: req.body.reason,
+      forceEndExisting: Boolean(req.body.forceEndExisting),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] || null,
     });
     await log(req.employee, 'IMPERSONATION_START', { type: 'impersonation_session', id: data.id }, null, data, req);
     return ok(res, data, 'Impersonation session started');
@@ -358,6 +476,9 @@ async function endImpersonation(req, res) {
     const data = await superadminService.endImpersonation({
       superAdminId: req.employee.id,
       sessionId: req.params.sessionId || req.body.sessionId || null,
+      endReason: req.body.endReason || 'manual_end',
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] || null,
     });
     await log(req.employee, 'IMPERSONATION_END', { type: 'impersonation_session', id: data.id }, null, data, req);
     return ok(res, data, 'Impersonation session ended');
@@ -384,10 +505,48 @@ async function impersonationHistory(req, res) {
   }
 }
 
+async function impersonationDetail(req, res) {
+  try {
+    const data = await superadminService.getImpersonationDetail(req.employee.id, req.params.sessionId);
+    return ok(res, data, 'Impersonation session detail fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_021', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function auditLogs(req, res) {
   try {
     const data = await superadminService.getAuditLogs(req.query);
     return ok(res, data, 'Audit logs fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_022', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function auditLogSummary(req, res) {
+  try {
+    const data = await superadminService.getAuditLogSummary(req.query);
+    return ok(res, data, 'Audit log summary fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_022', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function auditLogById(req, res) {
+  try {
+    const data = await superadminService.getAuditLogById(req.params.id);
+    return ok(res, data, 'Audit log fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SA_022', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function exportAuditLogs(req, res) {
+  try {
+    const result = await superadminService.exportAuditLogs(req.query);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
   } catch (error) {
     return fail(res, error.code || 'SA_022', error.message, error.details || [], error.statusCode || 400);
   }
@@ -472,6 +631,7 @@ async function databaseStatus(req, res) {
 async function retryQueueJob(req, res) {
   try {
     const data = await superadminService.retryQueueJob(req.params.queue, req.params.jobId);
+    await log(req.employee, 'HEALTH_QUEUE_JOB_RETRIED', { type: 'queue_job', id: `${req.params.queue}:${req.params.jobId}` }, null, data, req);
     return ok(res, data, 'Queue job retried');
   } catch (error) {
     return fail(res, error.code || 'SA_040', error.message, error.details || [], error.statusCode || 400);
@@ -481,6 +641,7 @@ async function retryQueueJob(req, res) {
 async function retryAllQueueJobs(req, res) {
   try {
     const data = await superadminService.retryAllFailedJobs(req.params.queue);
+    await log(req.employee, 'HEALTH_QUEUE_RETRY_ALL', { type: 'queue', id: req.params.queue }, null, data, req);
     return ok(res, data, 'All failed queue jobs retried');
   } catch (error) {
     return fail(res, error.code || 'SA_041', error.message, error.details || [], error.statusCode || 400);
@@ -495,13 +656,19 @@ module.exports = {
   exportOrgs,
   createOrg,
   listOrgs,
+  previewOrgSlug,
   getOrg,
   getOrgEmployees,
   getOrgAttendance,
   getOrgBilling,
   sendBillingAlert,
+  resendOrgInvite,
+  updateOrgProfile,
   suspendOrg,
   activateOrg,
+  cancelOrg,
+  addOrgNote,
+  transferOrgOwner,
   changePlan,
   extendTrial,
   stats,
@@ -516,6 +683,7 @@ module.exports = {
   billingPlanBreakdown,
   billingChurn,
   billingInvoices,
+  exportBillingInvoices,
   billingTopOrgs,
   alerts,
   recentSignups,
@@ -527,7 +695,11 @@ module.exports = {
   endImpersonation,
   activeImpersonation,
   impersonationHistory,
+  impersonationDetail,
   auditLogs,
+  auditLogSummary,
+  auditLogById,
+  exportAuditLogs,
   getFeatureFlags,
   setGlobalFeatureFlag,
   setOrgFeatureFlagOverride,

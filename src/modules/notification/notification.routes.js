@@ -9,9 +9,12 @@ const router = express.Router();
 router.use(authenticate, orgGuard);
 
 router.get('/', asyncHandler(notificationController.list));
+router.patch('/read-all', asyncHandler(notificationController.readAll));
+router.patch('/:id/read', asyncHandler(notificationController.readOne));
 router.post('/read', asyncHandler(notificationController.read));
 router.post('/read-all', asyncHandler(notificationController.readAll));
 router.get('/unread-count', asyncHandler(notificationController.unreadCount));
 router.post('/register-token', asyncHandler(notificationController.registerToken));
+router.delete('/register-token', asyncHandler(notificationController.deregisterToken));
 
 module.exports = router;

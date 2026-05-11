@@ -29,6 +29,24 @@ async function listShifts(req, res) {
   return ok(res, data, 'Shifts fetched');
 }
 
+async function getShift(req, res) {
+  try {
+    const data = await shiftService.getShiftById(req.org_id, req.params.id);
+    return ok(res, data, 'Shift fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SHIFT_006', error.message, [], error.statusCode || 404);
+  }
+}
+
+async function listShiftEmployees(req, res) {
+  try {
+    const data = await shiftService.listShiftEmployees(req.org_id, req.params.id);
+    return ok(res, data, 'Shift employees fetched');
+  } catch (error) {
+    return fail(res, error.code || 'SHIFT_007', error.message, [], error.statusCode || 404);
+  }
+}
+
 async function createShift(req, res) {
   const details = validateShiftPayload(req.body);
 
@@ -73,6 +91,8 @@ async function deleteShift(req, res) {
 
 module.exports = {
   listShifts,
+  getShift,
+  listShiftEmployees,
   createShift,
   updateShift,
   deleteShift,

@@ -30,6 +30,21 @@ async function read(req, res) {
   }
 }
 
+async function readOne(req, res) {
+  try {
+    const data = await notificationService.markAsRead({
+      orgId: req.org_id,
+      employeeId: req.employee.id,
+      ids: [req.params.id],
+      req,
+    });
+
+    return ok(res, data, 'Notification marked as read');
+  } catch (error) {
+    return fail(res, error.code || 'NOTIF_004', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function readAll(req, res) {
   try {
     const data = await notificationService.markAllAsRead({
@@ -72,10 +87,27 @@ async function registerToken(req, res) {
   }
 }
 
+async function deregisterToken(req, res) {
+  try {
+    const data = await notificationService.deregisterToken({
+      orgId: req.org_id,
+      employeeId: req.employee.id,
+      body: req.body,
+      req,
+    });
+
+    return ok(res, data, 'Notification token deregistered');
+  } catch (error) {
+    return fail(res, error.code || 'NOTIF_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   list,
   read,
+  readOne,
   readAll,
   unreadCount,
   registerToken,
+  deregisterToken,
 };

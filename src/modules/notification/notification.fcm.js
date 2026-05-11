@@ -69,7 +69,39 @@ function getFirebaseApp() {
   return firebaseApp;
 }
 
-async function sendMulticast({ tokens, notification, data = {} }) {
+function buildStringData(data = {}) {
+  return Object.entries(data).reduce((accumulator, [key, value]) => {
+    accumulator[key] = value == null ? '' : String(value);
+    return accumulator;
+  }, {});
+}
+
+function buildExpiryHeaders(ttlSeconds) {
+  const ttl = Number(ttlSeconds || 0);
+  if (!Number.isFinite(ttl) || ttl <= 0) {
+    return {};
+  }
+
+  return {
+    android: {
+      priority: 'high',
+      ttl: ttl * 1000,
+    },
+    apns: {
+      headers: {
+        'apns-expiration': String(Math.floor(Date.now() / 1000) + ttl),
+      },
+      payload: {
+        aps: {
+          sound: 'default',
+          'content-available': 1,
+        },
+      },
+    },
+  };
+}
+
+async function sendMulticast({ tokens, notification, data = {}, ttlSeconds = null }) {
   if (!Array.isArray(tokens) || tokens.length === 0) {
     return {
       successCount: 0,
@@ -97,10 +129,8 @@ async function sendMulticast({ tokens, notification, data = {} }) {
   return admin.messaging(app).sendEachForMulticast({
     tokens,
     notification,
-    data: Object.entries(data).reduce((accumulator, [key, value]) => {
-      accumulator[key] = value == null ? '' : String(value);
-      return accumulator;
-    }, {}),
+    data: buildStringData(data),
+    ...buildExpiryHeaders(ttlSeconds),
   });
 }
 

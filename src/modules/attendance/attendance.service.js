@@ -2,13 +2,21 @@ const { Op } = require('sequelize');
 const XLSX = require('xlsx');
 const { Attendance, AttendanceSession, AuditLog, Branch, DeviceException, DeviceToken, Employee, LeaveRequest, Organisation, Regularisation, Shift } = require('../../models');
 const { redisClient } = require('../../config/redis');
-const { checkoutGrace } = require('../../queues');
+const { checkoutGrace, notification } = require('../../queues');
 const { log } = require('../../utils/auditLog');
-const { createChallenge, consumeChallenge } = require('./attendance.challengeService');
+const { createChallenge, consumeChallenge, readChallenge } = require('./attendance.challengeService');
 const { computeAttendanceStatus } = require('./attendance.statusEngine');
-const { checkGeofence } = require('../geofence/geofence.service');
+const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence.service');
 const faceService = require('../face/face.service');
 const { uploadAttendanceSelfie } = require('../face/face.storageService');
+const { getUndoExpiryJobId } = require('../../queues/workers/checkoutGrace.worker');
+const { compareEmbeddings, isValidEmbedding, normalizeEmbedding } = require('../face/face.localModel');
+const { generateFaceEmbedding } = require('../face/face.tensorflowService');
+const { searchFacesByImage } = require('../face/face.cloudService');
+
+const KIOSK_LOCAL_THRESHOLD = 0.88;
+const KIOSK_AMBIGUOUS_MARGIN = 0.02;
+const KIOSK_REKOGNITION_THRESHOLD = 95;
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -66,7 +74,7 @@ async function getOrgTimezone(orgId) {
     attributes: ['timezone'],
   });
 
-  return organisation && organisation.timezone ? organisation.timezone : 'UTC';
+  return organisation && organisation.timezone ? organisation.timezone : 'Asia/Kolkata';
 }
 
 function getCooldownKey(orgId, empId) {
@@ -153,13 +161,13 @@ async function getOpenSession(attendanceId) {
   });
 }
 
-async function validateChallenge({ orgId, empId, challengeToken, captureTimestamp }) {
+async function validateChallenge({ orgId, empId, challengeToken, captureTimestamp, consume = true }) {
   // ✅ FIX: Validate challenge token format
   if (!challengeToken || typeof challengeToken !== 'string') {
     throw createError('ATT_013', 'Invalid challenge token format', 422);
   }
   
-  const payload = await consumeChallenge(challengeToken);
+  const payload = consume ? await consumeChallenge(challengeToken) : await readChallenge(challengeToken);
 
   if (!payload) {
     throw createError('ATT_008', 'Challenge token is invalid, expired, or already used', 401);
@@ -172,7 +180,7 @@ async function validateChallenge({ orgId, empId, challengeToken, captureTimestam
 
   // ✅ FIX: Validate timestamp is recent
   const captureTime = Number(captureTimestamp);
-  if (!Number.isFinite(captureTime) || Math.abs(Date.now() - captureTime) > 35 * 1000) {
+  if (!Number.isFinite(captureTime) || Math.abs(Date.now() - captureTime) > 180 * 1000) {
     throw createError('ATT_011', 'Capture timestamp is outside the allowed window', 401);
   }
 }
@@ -188,7 +196,7 @@ async function validateDevice({ orgId, employee, deviceId, useDeviceException, e
   }
 
   if (useDeviceException && exceptionId) {
-    const [updatedCount] = await DeviceException.update(
+    const [approvedUpdatedCount] = await DeviceException.update(
       { status: 'used' },
       {
         where: {
@@ -202,7 +210,23 @@ async function validateDevice({ orgId, employee, deviceId, useDeviceException, e
       }
     );
 
-    if (!updatedCount) {
+    if (approvedUpdatedCount) {
+      return;
+    }
+
+    const usedException = await DeviceException.findOne({
+      where: {
+        id: exceptionId,
+        org_id: orgId,
+        emp_id: employee.id,
+        temp_device_id: deviceId,
+        status: 'used',
+        expires_at: { [Op.gt]: new Date() },
+      },
+      attributes: ['id'],
+    });
+
+    if (!usedException) {
       throw createError('AUTH_009', 'Device exception is invalid or expired', 401);
     }
     return;
@@ -212,12 +236,16 @@ async function validateDevice({ orgId, employee, deviceId, useDeviceException, e
 }
 
 function validateGpsPayload(body) {
-  const latitude = Number(body.lat);
-  const longitude = Number(body.lng);
+  const latitude = Number(body.lat ?? body.latitude ?? body.coords?.latitude);
+  const longitude = Number(body.lng ?? body.longitude ?? body.coords?.longitude);
 
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     throw createError('GEO_002', 'GPS coordinates are required', 400);
   }
+
+  body.lat = latitude;
+  body.lng = longitude;
+
   if (body.isMocked) {
     throw createError('GEO_001', 'Mock location detected', 400);
   }
@@ -238,7 +266,137 @@ function buildShiftInfo(shift) {
     name: shift.name,
     startTime: shift.start_time,
     endTime: shift.end_time,
+    minSessionMinutes: shift.min_session_minutes,
+    cooldownMinutes: shift.session_cooldown_minutes,
+    maxSessionsPerDay: shift.max_sessions_per_day,
   };
+}
+
+function localDateTimeToUtc(dateString, timeString, timezone = 'UTC') {
+  const [year, month, day] = String(dateString || '').split('-').map(Number);
+  const [hour, minute, second] = String(timeString || '00:00:00')
+    .split(':')
+    .map((value) => Number(value || 0));
+
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) {
+    return null;
+  }
+
+  const target = {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+  };
+
+  const partsToUtcEpoch = (parts) =>
+    Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second)
+    );
+
+  const getDateParts = (date) =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+      .formatToParts(date)
+      .reduce((accumulator, part) => {
+        if (part.type !== 'literal') {
+          accumulator[part.type] = part.value;
+        }
+        return accumulator;
+      }, {});
+
+  let guess = Date.UTC(year, month - 1, day, hour, minute, second);
+
+  for (let index = 0; index < 3; index += 1) {
+    const localParts = getDateParts(new Date(guess));
+    const diff = partsToUtcEpoch(target) - partsToUtcEpoch(localParts);
+    guess += diff;
+  }
+
+  return new Date(guess);
+}
+
+function addDays(dateString, days) {
+  const base = new Date(`${dateString}T00:00:00.000Z`);
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
+function getIncompleteExpiryDate(attendanceDate, shift) {
+  if (!attendanceDate || !shift?.end_time) {
+    return null;
+  }
+
+  const shiftEndDate = shift.crosses_midnight ? addDays(attendanceDate, 1) : attendanceDate;
+  return localDateTimeToUtc(shiftEndDate, shift.end_time, 'UTC');
+}
+
+async function scheduleIncompleteExpiry({ orgId, empId, attendanceId, sessionId, attendanceDate, shift, timezone }) {
+  const shiftEnd = getIncompleteExpiryDate(attendanceDate, shift && { ...shift, end_time: shift.end_time });
+  const localShiftEnd = shiftEnd
+    ? localDateTimeToUtc(
+        shift.crosses_midnight ? addDays(attendanceDate, 1) : attendanceDate,
+        shift.end_time,
+        timezone
+      )
+    : null;
+
+  if (!localShiftEnd) {
+    return null;
+  }
+
+  const graceMinutes = Number(shift.grace_minutes_checkout || 60);
+  const delayUntil = localShiftEnd.getTime() + graceMinutes * 60 * 1000;
+  const delay = Math.max(delayUntil - Date.now(), 0);
+  const jobId = `attendance_incomplete_expiry_${sessionId}`;
+
+  await checkoutGrace.add(
+    'incomplete_session_expiry',
+    {
+      orgId,
+      empId,
+      attendanceId,
+      sessionId,
+    },
+    {
+      jobId,
+      delay,
+      removeOnComplete: true,
+    }
+  );
+
+  const reminderDelay = Math.max(localShiftEnd.getTime() + 30 * 60 * 1000 - Date.now(), 0);
+  await notification.add(
+    'checkout_reminder',
+    {
+      orgId,
+      empId,
+      attendanceId,
+      sessionId,
+    },
+    {
+      jobId: `checkout_reminder_${sessionId}`,
+      delay: reminderDelay,
+      removeOnComplete: true,
+    }
+  );
+
+  return jobId;
 }
 
 function normalizeFaceMatch(result) {
@@ -318,6 +476,151 @@ function buildWorkbookBuffer(sheetName, rows) {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
+function normalizeDateFilter(query = {}, fallbackDate) {
+  const dateFrom = query.date || query.dateFrom || fallbackDate;
+  const dateTo = query.date || query.dateTo || dateFrom;
+
+  return {
+    dateFrom: dateFrom <= dateTo ? dateFrom : dateTo,
+    dateTo: dateFrom <= dateTo ? dateTo : dateFrom,
+  };
+}
+
+function getDateRangeBetween(dateFrom, dateTo) {
+  const dates = [];
+  const cursor = new Date(`${dateFrom}T00:00:00.000Z`);
+  const end = new Date(`${dateTo}T00:00:00.000Z`);
+
+  while (cursor <= end && dates.length <= 370) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+function buildEmployeeAttendanceWhere(orgId, query = {}) {
+  const where = {
+    org_id: orgId,
+    is_active: true,
+    role: { [Op.ne]: 'superadmin' },
+  };
+
+  if (query.branch) {
+    where.branch_id = query.branch;
+  }
+
+  if (query.employeeId) {
+    where.id = query.employeeId;
+  }
+
+  return where;
+}
+
+function buildAttendanceDateWhere(dateFrom, dateTo) {
+  return dateFrom === dateTo
+    ? dateFrom
+    : { [Op.between]: [dateFrom, dateTo] };
+}
+
+function toAttendanceListItem(row) {
+  return {
+    id: row.id,
+    date: row.date,
+    status: row.status,
+    totalWorkedMins: row.total_worked_minutes || 0,
+    sessionsToday: row.session_count || 0,
+    checkInTime: row.first_check_in,
+    checkOutTime: row.last_check_out,
+    workingHours: Number(row.total_worked_minutes || 0) / 60,
+    isLate: Boolean(row.is_late),
+    isAnomaly: Boolean(row.is_anomaly),
+    employee: row.employee
+      ? {
+          id: row.employee.id,
+          name: row.employee.name,
+          email: row.employee.email,
+        }
+      : null,
+  };
+}
+
+function toSyntheticNotMarkedItem(employee, date) {
+  return {
+    id: `not_marked:${employee.id}:${date}`,
+    date,
+    status: 'not_marked',
+    totalWorkedMins: 0,
+    sessionsToday: 0,
+    checkInTime: null,
+    checkOutTime: null,
+    workingHours: 0,
+    isLate: false,
+    isAnomaly: false,
+    isSyntheticNotMarked: true,
+    employee: {
+      id: employee.id,
+      name: employee.name,
+      email: employee.email,
+      emp_code: employee.emp_code,
+      branch_id: employee.branch_id,
+    },
+  };
+}
+
+async function getSyntheticNotMarkedAttendance(orgId, query = {}) {
+  if (query.isLate === 'true' || query.isLate === true) {
+    return [];
+  }
+
+  const timezone = await getOrgTimezone(orgId);
+  const today = getTodayDateString(timezone);
+  const { dateFrom, dateTo } = normalizeDateFilter(query, today);
+  const dateRange = getDateRangeBetween(dateFrom, dateTo);
+
+  if (dateRange.length === 0) {
+    return [];
+  }
+
+  const employees = await Employee.findAll({
+    where: buildEmployeeAttendanceWhere(orgId, query),
+    attributes: ['id', 'name', 'email', 'emp_code', 'branch_id'],
+    order: [['name', 'ASC']],
+  });
+
+  if (employees.length === 0) {
+    return [];
+  }
+
+  const attendanceRows = await Attendance.findAll({
+    where: {
+      org_id: orgId,
+      emp_id: { [Op.in]: employees.map((employee) => employee.id) },
+      date: buildAttendanceDateWhere(dateFrom, dateTo),
+    },
+    attributes: ['emp_id', 'date'],
+  });
+  const markedByEmployeeDate = new Set(
+    attendanceRows.map((attendance) => `${attendance.emp_id}:${attendance.date}`)
+  );
+
+  const rows = [];
+  dateRange.forEach((date) => {
+    employees.forEach((employee) => {
+      if (!markedByEmployeeDate.has(`${employee.id}:${date}`)) {
+        rows.push(toSyntheticNotMarkedItem(employee, date));
+      }
+    });
+  });
+
+  return rows.sort((left, right) => {
+    if (left.date !== right.date) {
+      return right.date.localeCompare(left.date);
+    }
+    return (left.employee?.name || '').localeCompare(right.employee?.name || '');
+  });
+}
+
 function requireSelfieBuffer(selfieBase64, actionLabel) {
   const selfieBuffer = faceService.decodeSelfie(selfieBase64);
 
@@ -335,10 +638,220 @@ async function validateLocationForBranch(branch, body) {
     return;
   }
 
-  const isInside = checkGeofence({ lat: Number(body.lat), lng: Number(body.lng) }, branch);
+  const employeeLocation = { lat: Number(body.lat), lng: Number(body.lng) };
+  const isInside = checkGeofence(employeeLocation, branch);
   if (!isInside) {
+    const accuracy = Number(body.accuracy || 0);
+    const toleranceMeters = Math.min(Math.max(accuracy, 15), 50);
+    const distanceToBoundary = distanceToPolygonMeters(employeeLocation, branch.geo_fence_polygons);
+
+    if (distanceToBoundary <= toleranceMeters) {
+      body.isGeofenceBuffered = true;
+      body.geofenceDistanceMeters = Number(distanceToBoundary.toFixed(2));
+      return;
+    }
+
     throw createError('GEO_003', 'Employee is outside the branch geofence', 400);
   }
+}
+
+function haversineMeters(from, to) {
+  const toRadians = (value) => (value * Math.PI) / 180;
+  const earthRadius = 6371000;
+  const latDelta = toRadians(to.lat - from.lat);
+  const lngDelta = toRadians(to.lng - from.lng);
+  const a =
+    Math.sin(latDelta / 2) ** 2 +
+    Math.cos(toRadians(from.lat)) *
+      Math.cos(toRadians(to.lat)) *
+      Math.sin(lngDelta / 2) ** 2;
+  return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function validateVelocity({ orgId, empId, lat, lng, timestamp = new Date() }) {
+  const previousSession = await AttendanceSession.findOne({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      [Op.or]: [
+        { check_out_lat: { [Op.ne]: null }, check_out_lng: { [Op.ne]: null }, check_out_time: { [Op.ne]: null } },
+        { check_in_lat: { [Op.ne]: null }, check_in_lng: { [Op.ne]: null }, check_in_time: { [Op.ne]: null } },
+      ],
+    },
+    order: [['updated_at', 'DESC']],
+  });
+
+  if (!previousSession) {
+    return;
+  }
+
+  const previousLat = previousSession.check_out_lat ?? previousSession.check_in_lat;
+  const previousLng = previousSession.check_out_lng ?? previousSession.check_in_lng;
+  const previousTime = previousSession.check_out_time || previousSession.check_in_time;
+
+  if (previousLat == null || previousLng == null || !previousTime) {
+    return;
+  }
+
+  const seconds = Math.abs(new Date(timestamp).getTime() - new Date(previousTime).getTime()) / 1000;
+  if (seconds < 1) {
+    return;
+  }
+
+  const meters = haversineMeters(
+    { lat: Number(previousLat), lng: Number(previousLng) },
+    { lat: Number(lat), lng: Number(lng) }
+  );
+
+  if (meters / seconds > 83.33) {
+    throw createError('GEO_004', 'Location changed too quickly compared with the last attendance point', 400);
+  }
+}
+
+async function resolveKioskEmbedding(faceEmbedding, selfieBuffer) {
+  const normalized = Array.isArray(faceEmbedding) ? normalizeEmbedding(faceEmbedding) : null;
+
+  if (normalized && isValidEmbedding(normalized)) {
+    return normalized;
+  }
+
+  if (Buffer.isBuffer(selfieBuffer)) {
+    try {
+      const generated = await generateFaceEmbedding(selfieBuffer);
+      const generatedEmbedding = normalizeEmbedding(generated.embedding);
+      return isValidEmbedding(generatedEmbedding) ? generatedEmbedding : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function identifyEmployeeByFace({ orgId, faceEmbedding, selfieBuffer }) {
+  const searchableEmbedding = await resolveKioskEmbedding(faceEmbedding, selfieBuffer);
+
+  if (searchableEmbedding) {
+    const employees = await Employee.findAll({
+      where: {
+        org_id: orgId,
+        is_active: true,
+        is_face_enrolled: true,
+      },
+      attributes: [
+        'id',
+        'org_id',
+        'branch_id',
+        'shift_id',
+        'name',
+        'emp_code',
+        'face_embedding_local',
+        'face_embedding_id',
+      ],
+    });
+
+    const rankedMatches = employees
+      .filter((employee) => Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128)
+      .map((employee) => {
+        const result = compareEmbeddings(searchableEmbedding, employee.face_embedding_local);
+        return {
+          employee,
+          score: result.score,
+          source: 'local',
+        };
+      })
+      .filter((match) => Number.isFinite(match.score))
+      .sort((left, right) => right.score - left.score);
+
+    const best = rankedMatches[0];
+    const second = rankedMatches[1];
+
+    if (best && best.score >= KIOSK_LOCAL_THRESHOLD) {
+      if (second && best.score - second.score < KIOSK_AMBIGUOUS_MARGIN) {
+        throw createError('FACE_007', 'Face match is ambiguous. Please try again.', 409);
+      }
+
+      return {
+        employee: best.employee,
+        match: {
+          score: Number(best.score.toFixed(3)),
+          source: best.source,
+          threshold: KIOSK_LOCAL_THRESHOLD,
+        },
+      };
+    }
+  }
+
+  const cloudSearch = await searchFacesByImage(selfieBuffer, {
+    threshold: KIOSK_REKOGNITION_THRESHOLD,
+    maxFaces: 5,
+  });
+
+  if (cloudSearch.matches.length > 0) {
+    const faceIds = cloudSearch.matches.map((match) => match.faceId);
+    const employees = await Employee.findAll({
+      where: {
+        org_id: orgId,
+        is_active: true,
+        is_face_enrolled: true,
+        face_embedding_id: { [Op.in]: faceIds },
+      },
+      attributes: ['id', 'org_id', 'branch_id', 'shift_id', 'name', 'emp_code', 'face_embedding_id'],
+    });
+    const employeeByFaceId = employees.reduce((accumulator, employee) => {
+      accumulator[employee.face_embedding_id] = employee;
+      return accumulator;
+    }, {});
+    const rankedOrgMatches = cloudSearch.matches
+      .map((match) => ({
+        ...match,
+        employee: employeeByFaceId[match.faceId],
+      }))
+      .filter((match) => match.employee)
+      .sort((left, right) => right.similarity - left.similarity);
+    const best = rankedOrgMatches[0];
+    const second = rankedOrgMatches[1];
+
+    if (best && best.similarity >= KIOSK_REKOGNITION_THRESHOLD) {
+      if (second && best.similarity - second.similarity < 2) {
+        throw createError('FACE_007', 'Face match is ambiguous. Please try again.', 409);
+      }
+
+      return {
+        employee: best.employee,
+        match: {
+          score: Number((best.similarity / 100).toFixed(3)),
+          confidence: best.similarity,
+          source: 'aws',
+          threshold: KIOSK_REKOGNITION_THRESHOLD,
+        },
+      };
+    }
+  }
+
+  throw createError('FACE_008', 'No registered employee face matched in this organisation', 404);
+}
+
+async function getLeaveApprovalForDate(orgId, empId, date) {
+  const leave = await LeaveRequest.findOne({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      status: 'approved',
+      from_date: { [Op.lte]: date },
+      to_date: { [Op.gte]: date },
+    },
+    order: [['is_half_day', 'DESC']],
+  });
+
+  if (!leave) {
+    return null;
+  }
+
+  return {
+    type: leave.is_half_day ? 'half_day' : 'full_day',
+    leaveId: leave.id,
+  };
 }
 
 async function getTodayState(orgId, empId) {
@@ -358,6 +871,7 @@ async function getTodayState(orgId, empId) {
       sessionsToday: 0,
       firstCheckInTime: null,
       shiftInfo: buildShiftInfo(shift),
+      orgTimezone: timezone,
     };
   }
 
@@ -377,6 +891,7 @@ async function getTodayState(orgId, empId) {
     sessionsToday: attendance.session_count || 0,
     firstCheckInTime: attendance.first_check_in || null,
     shiftInfo: buildShiftInfo(shift),
+    orgTimezone: timezone,
   };
 }
 
@@ -387,51 +902,31 @@ async function requestChallenge(orgId, empId) {
 
 async function checkIn({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
-  await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
+  await validateChallenge({
+    orgId,
+    empId,
+    challengeToken: body.challengeToken,
+    captureTimestamp: body.captureTimestamp,
+    consume: false,
+  });
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
+  await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
   const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-in');
 
-  const faceVerification = await faceService.verifyFace(
-    empId,
-    orgId,
-    body.faceEmbedding || null,
-    selfieBuffer
-  );
+  const faceVerification = await faceService.verifyFace( empId, orgId, body.faceEmbedding || null, selfieBuffer );
   const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
-  // ✅ FIX: Use findOrCreate to prevent race condition
-  const [attendance, created] = await Attendance.findOrCreate({
-    where: {
-      org_id: orgId,
-      emp_id: empId,
-      date: getTodayDateString(timezone),
-    },
-    defaults: {
-      branch_id: employee.branch_id,
-      shift_id: employee.shift_id,
-      status: 'not_marked',
-      first_check_in: new Date(),
-      session_count: 0,
-      total_worked_minutes: 0,
-      is_anomaly: Number(body.accuracy) > 50,
-      source: 'self',
-      auto_absent_overridden: false,
-      face_match_score: faceMatchScore,
-      face_match_source: faceMatchSource,
-    },
-  });
-
-  // Check if session already open
-  if (!created) {
-    const openSession = await getOpenSession(attendance.id);
+  const existingAttendance = await getTodayAttendance(orgId, empId, timezone);
+  if (existingAttendance) {
+    const openSession = await getOpenSession(existingAttendance.id);
     if (openSession) {
       throw createError('ATT_003', 'An attendance session is already open', 400);
     }
 
-    if (Number(attendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
+    if (Number(existingAttendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
       throw createError('ATT_004', 'Maximum sessions reached for today', 400);
     }
 
@@ -440,6 +935,35 @@ async function checkIn({ orgId, empId, body, req }) {
       throw createError('ATT_004', 'Employee is in cooldown period', 400);
     }
   }
+
+  await validateChallenge({
+    orgId,
+    empId,
+    challengeToken: body.challengeToken,
+    captureTimestamp: body.captureTimestamp,
+  });
+
+  // ✅ FIX: Use findOrCreate to prevent race condition
+  const [attendance] = await Attendance.findOrCreate({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      date: getTodayDateString(timezone),
+    },
+    defaults: {
+      branch_id: employee.branch_id,
+      shift_id: employee.shift_id,
+      status: 'pending',
+      first_check_in: new Date(),
+      session_count: 0,
+      total_worked_minutes: 0,
+      is_anomaly: Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
+      source: 'self',
+      auto_absent_overridden: false,
+      face_match_score: faceMatchScore,
+      face_match_source: faceMatchSource,
+    },
+  });
 
   const nextSessionNumber = Number(attendance.session_count || 0) + 1;
   const session = await AttendanceSession.create({
@@ -458,14 +982,28 @@ async function checkIn({ orgId, empId, body, req }) {
   await attendance.update({
     session_count: nextSessionNumber,
     first_check_in: attendance.first_check_in || session.check_in_time,
-    status: 'present',
-    is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50,
+    status: 'pending',
+    is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
     source: 'self',
     auto_absent_overridden:
       attendance.status === 'absent' && Number(attendance.session_count || 0) === 0 && !attendance.first_check_in,
     face_match_score: faceMatchScore,
     face_match_source: faceMatchSource,
   });
+
+  const incompleteJobId = await scheduleIncompleteExpiry({
+    orgId,
+    empId,
+    attendanceId: attendance.id,
+    sessionId: session.id,
+    attendanceDate: attendance.date,
+    shift,
+    timezone,
+  });
+
+  if (incompleteJobId) {
+    await attendance.update({ checkout_grace_job_id: incompleteJobId });
+  }
 
   await redisClient.del(getCooldownKey(orgId, empId));
   await log(req.employee, 'attendance.check_in', { type: 'attendance_session', id: session.id }, null, { attendanceId: attendance.id }, req);
@@ -480,18 +1018,25 @@ async function checkIn({ orgId, empId, body, req }) {
 
   return {
     session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
-    attendanceStatus: 'present',
+    attendanceStatus: 'pending',
     buttonState: 'CHECKED_IN',
   };
 }
 
 async function checkOut({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
-  await validateChallenge({ orgId, empId, challengeToken: body.challengeToken, captureTimestamp: body.captureTimestamp });
+  await validateChallenge({
+    orgId,
+    empId,
+    challengeToken: body.challengeToken,
+    captureTimestamp: body.captureTimestamp,
+    consume: false,
+  });
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
+  await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
   const checkoutSelfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-out');
 
   const attendance = await getTodayAttendance(orgId, empId, timezone);
@@ -510,6 +1055,20 @@ async function checkOut({ orgId, empId, body, req }) {
   const session = await getOpenSession(attendance.id);
   if (!session) {
     throw createError('ATT_005', 'No open attendance session found', 400);
+  }
+
+  await validateChallenge({
+    orgId,
+    empId,
+    challengeToken: body.challengeToken,
+    captureTimestamp: body.captureTimestamp,
+  });
+
+  if (attendance.checkout_grace_job_id) {
+    const pendingIncompleteJob = await checkoutGrace.getJob(attendance.checkout_grace_job_id);
+    if (pendingIncompleteJob) {
+      await pendingIncompleteJob.remove().catch(() => {});
+    }
   }
 
   const now = new Date();
@@ -533,12 +1092,13 @@ async function checkOut({ orgId, empId, body, req }) {
 
   const sessions = await getAttendanceSessions(attendance.id);
   const totalWorkedMinutes = sessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
+  const leaveApproval = await getLeaveApprovalForDate(orgId, empId, attendance.date);
   const computed = computeAttendanceStatus({
     date: attendance.date,
     first_check_in: attendance.first_check_in,
     last_check_out: now,
     total_worked_minutes: totalWorkedMinutes,
-  }, shift, null, timezone);
+  }, shift, leaveApproval, timezone);
 
   await attendance.update({
     last_check_out: now,
@@ -553,8 +1113,28 @@ async function checkOut({ orgId, empId, body, req }) {
     check_out_type: computed.checkOutType,
     face_match_score: faceMatchScore,
     face_match_source: faceMatchSource,
+    is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
     is_finalised: Boolean(body.isFinalCheckout),
   });
+
+  if (computed.isLate) {
+    await notification.add(
+      'send_push',
+      {
+        orgId,
+        empIds: [empId],
+        type: 'late_marked',
+        title: 'Late attendance marked',
+        body: `Your attendance for ${attendance.date} was marked late by ${computed.lateByMinutes || 0} minutes.`,
+        actionUrl: 'attendease://attendance',
+        data: { attendance_id: attendance.id, date: attendance.date },
+      },
+      {
+        jobId: `late_marked_${attendance.id}`,
+        removeOnComplete: true,
+      }
+    );
+  }
 
   const cooldownEndsAt = new Date(now.getTime() + Number(shift.session_cooldown_minutes || 15) * 60 * 1000);
   if (!body.isFinalCheckout) {
@@ -566,18 +1146,22 @@ async function checkOut({ orgId, empId, body, req }) {
   const undoKey = getUndoKey(orgId, empId, session.id);
   await redisClient.set(undoKey, '1', 'EX', 10 * 60);
 
-  const checkoutGraceJobId = `checkout_grace_${session.id}`;
-  await checkoutGrace.add('checkout_grace_expiry', {
-    orgId,
-    empId,
-    attendanceId: attendance.id,
-    sessionId: session.id,
-  }, {
-    jobId: checkoutGraceJobId,
-    delay: 10 * 60 * 1000,
-    removeOnComplete: true,
-  });
-  await attendance.update({ checkout_grace_job_id: checkoutGraceJobId });
+  const undoExpiryJobId = getUndoExpiryJobId(session.id);
+  await checkoutGrace.add(
+    'undo_expiry',
+    {
+      orgId,
+      empId,
+      attendanceId: attendance.id,
+      sessionId: session.id,
+    },
+    {
+      jobId: undoExpiryJobId,
+      delay: 10 * 60 * 1000,
+      removeOnComplete: true,
+    }
+  );
+  await attendance.update({ checkout_grace_job_id: null });
 
   await log(req.employee, 'attendance.check_out', { type: 'attendance_session', id: session.id }, null, { workedMinutes }, req);
   await pushLiveFeedEvent(orgId, {
@@ -603,6 +1187,510 @@ async function checkOut({ orgId, empId, body, req }) {
     },
     totalWorkedMins: totalWorkedMinutes,
     cooldownEndsAt: body.isFinalCheckout ? null : cooldownEndsAt.toISOString(),
+  };
+}
+
+async function kioskCheckIn({ orgId, employee, shift, body, req, faceMatch }) {
+  const timezone = await getOrgTimezone(orgId);
+  const empId = employee.id;
+  await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
+
+  const [attendance, created] = await Attendance.findOrCreate({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      date: getTodayDateString(timezone),
+    },
+    defaults: {
+      branch_id: employee.branch_id,
+      shift_id: employee.shift_id,
+      status: 'pending',
+      first_check_in: new Date(),
+      session_count: 0,
+      total_worked_minutes: 0,
+      is_anomaly: Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
+      source: 'kiosk',
+      auto_absent_overridden: false,
+      face_match_score: faceMatch.score,
+      face_match_source: faceMatch.source,
+    },
+  });
+
+  if (!created) {
+    const openSession = await getOpenSession(attendance.id);
+    if (openSession) {
+      throw createError('ATT_003', 'Matched employee already has an open attendance session', 400);
+    }
+
+    if (Number(attendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
+      throw createError('ATT_004', 'Matched employee has reached maximum sessions for today', 400);
+    }
+
+    const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
+    if (cooldownEndsAt && new Date(cooldownEndsAt) > new Date()) {
+      throw createError('ATT_004', 'Matched employee is in cooldown period', 400);
+    }
+  }
+
+  const nextSessionNumber = Number(attendance.session_count || 0) + 1;
+  const session = await AttendanceSession.create({
+    attendance_id: attendance.id,
+    org_id: orgId,
+    emp_id: empId,
+    session_number: nextSessionNumber,
+    check_in_time: new Date(),
+    check_in_lat: Number(body.lat),
+    check_in_lng: Number(body.lng),
+    status: 'open',
+    worked_minutes: 0,
+    is_undo_eligible: false,
+  });
+
+  await attendance.update({
+    session_count: nextSessionNumber,
+    first_check_in: attendance.first_check_in || session.check_in_time,
+    status: 'pending',
+    is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
+    source: 'kiosk',
+    auto_absent_overridden:
+      attendance.status === 'absent' && Number(attendance.session_count || 0) === 0 && !attendance.first_check_in,
+    face_match_score: faceMatch.score,
+    face_match_source: faceMatch.source,
+  });
+
+  const incompleteJobId = await scheduleIncompleteExpiry({
+    orgId,
+    empId,
+    attendanceId: attendance.id,
+    sessionId: session.id,
+    attendanceDate: attendance.date,
+    shift,
+    timezone,
+  });
+
+  if (incompleteJobId) {
+    await attendance.update({ checkout_grace_job_id: incompleteJobId });
+  }
+
+  await redisClient.del(getCooldownKey(orgId, empId));
+  await log(
+    req.employee,
+    'attendance.kiosk_check_in',
+    { type: 'attendance_session', id: session.id },
+    null,
+    {
+      attendanceId: attendance.id,
+      matchedEmpId: empId,
+      kioskHostEmpId: req.employee.id,
+      deviceId: body.deviceId || null,
+      faceMatch,
+    },
+    req
+  );
+  await pushLiveFeedEvent(orgId, {
+    empId,
+    empName: employee.name,
+    action: 'kiosk-check-in',
+    time: session.check_in_time,
+    selfieUrl: null,
+    status: attendance.status,
+  });
+
+  return {
+    action: 'check_in',
+    session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
+    attendanceStatus: 'pending',
+  };
+}
+
+async function kioskCheckOut({ orgId, employee, shift, body, req, faceMatch, selfieBuffer }) {
+  const timezone = await getOrgTimezone(orgId);
+  const empId = employee.id;
+  await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
+
+  const attendance = await getTodayAttendance(orgId, empId, timezone);
+  if (!attendance) {
+    throw createError('HTTP_404', 'Attendance record not found for matched employee today', 404);
+  }
+
+  const session = await getOpenSession(attendance.id);
+  if (!session) {
+    throw createError('ATT_005', 'No open attendance session found for matched employee', 400);
+  }
+
+  if (attendance.checkout_grace_job_id) {
+    const pendingIncompleteJob = await checkoutGrace.getJob(attendance.checkout_grace_job_id);
+    if (pendingIncompleteJob) {
+      await pendingIncompleteJob.remove().catch(() => {});
+    }
+  }
+
+  const now = new Date();
+  const workedMinutes = Math.max(0, Math.round((now.getTime() - new Date(session.check_in_time).getTime()) / 60000));
+  let uploadedCheckoutSelfie = null;
+  try {
+    uploadedCheckoutSelfie = await uploadAttendanceSelfie(selfieBuffer, orgId, empId, 'kiosk-check-out');
+  } catch (error) {
+    uploadedCheckoutSelfie = null;
+  }
+
+  await session.update({
+    check_out_time: now,
+    check_out_lat: Number(body.lat),
+    check_out_lng: Number(body.lng),
+    selfie_url: uploadedCheckoutSelfie ? uploadedCheckoutSelfie.secureUrl : session.selfie_url,
+    worked_minutes: workedMinutes,
+    status: 'completed',
+    is_undo_eligible: false,
+  });
+
+  const sessions = await getAttendanceSessions(attendance.id);
+  const totalWorkedMinutes = sessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
+  const leaveApproval = await getLeaveApprovalForDate(orgId, empId, attendance.date);
+  const computed = computeAttendanceStatus(
+    {
+      date: attendance.date,
+      first_check_in: attendance.first_check_in,
+      last_check_out: now,
+      total_worked_minutes: totalWorkedMinutes,
+    },
+    shift,
+    leaveApproval,
+    timezone
+  );
+
+  await attendance.update({
+    last_check_out: now,
+    total_worked_minutes: totalWorkedMinutes,
+    status: computed.status,
+    is_late: computed.isLate,
+    late_by_minutes: computed.lateByMinutes || 0,
+    is_overtime: computed.isOvertime,
+    overtime_minutes: computed.overtimeMinutes,
+    is_early_checkout: computed.isEarlyCheckout,
+    early_by_minutes: computed.earlyByMinutes || 0,
+    check_out_type: computed.checkOutType,
+    face_match_score: faceMatch.score,
+    face_match_source: faceMatch.source,
+    source: 'kiosk',
+    is_anomaly: attendance.is_anomaly || Number(body.accuracy) > 50 || Boolean(body.isGeofenceBuffered),
+    is_finalised: false,
+    checkout_grace_job_id: null,
+  });
+
+  if (computed.isLate) {
+    await notification.add(
+      'send_push',
+      {
+        orgId,
+        empIds: [empId],
+        type: 'late_marked',
+        title: 'Late attendance marked',
+        body: `Your attendance for ${attendance.date} was marked late by ${computed.lateByMinutes || 0} minutes.`,
+        actionUrl: 'attendease://attendance',
+        data: { attendance_id: attendance.id, date: attendance.date },
+      },
+      {
+        jobId: `late_marked_${attendance.id}`,
+        removeOnComplete: true,
+      }
+    );
+  }
+
+  const cooldownEndsAt = new Date(now.getTime() + Number(shift.session_cooldown_minutes || 15) * 60 * 1000);
+  await redisClient.set(
+    getCooldownKey(orgId, empId),
+    cooldownEndsAt.toISOString(),
+    'EX',
+    Number(shift.session_cooldown_minutes || 15) * 60
+  );
+
+  await log(
+    req.employee,
+    'attendance.kiosk_check_out',
+    { type: 'attendance_session', id: session.id },
+    null,
+    {
+      matchedEmpId: empId,
+      kioskHostEmpId: req.employee.id,
+      deviceId: body.deviceId || null,
+      workedMinutes,
+      faceMatch,
+    },
+    req
+  );
+  await pushLiveFeedEvent(orgId, {
+    empId,
+    empName: employee.name,
+    action: 'kiosk-check-out',
+    time: session.check_out_time,
+    selfieUrl: session.selfie_url || null,
+    status: computed.status,
+  });
+
+  return {
+    action: 'check_out',
+    session: {
+      id: session.id,
+      checkInTime: session.check_in_time,
+      checkOutTime: session.check_out_time,
+      status: session.status,
+      workedMinutes,
+    },
+    attendanceStatus: computed.status,
+    totalWorkedMins: totalWorkedMinutes,
+    cooldownEndsAt: cooldownEndsAt.toISOString(),
+  };
+}
+
+async function kioskScan({ orgId, hostEmpId, body, req }) {
+  const hostContext = await getEmployeeContext(orgId, hostEmpId);
+  await validateChallenge({
+    orgId,
+    empId: hostEmpId,
+    challengeToken: body.challengeToken,
+    captureTimestamp: body.captureTimestamp,
+  });
+  await validateLocationForBranch(hostContext.branch, body);
+
+  const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'kiosk attendance');
+  const { employee: matchedEmployee, match } = await identifyEmployeeByFace({
+    orgId,
+    faceEmbedding: body.faceEmbedding || null,
+    selfieBuffer,
+  });
+
+  const matchedContext = await getEmployeeContext(orgId, matchedEmployee.id);
+  const timezone = await getOrgTimezone(orgId);
+  const attendance = await getTodayAttendance(orgId, matchedEmployee.id, timezone);
+  const openSession = attendance ? await getOpenSession(attendance.id) : null;
+  const result = openSession
+    ? await kioskCheckOut({
+        orgId,
+        employee: matchedContext.employee,
+        shift: matchedContext.shift,
+        body,
+        req,
+        faceMatch: match,
+        selfieBuffer,
+      })
+    : await kioskCheckIn({
+        orgId,
+        employee: matchedContext.employee,
+        shift: matchedContext.shift,
+        body,
+        req,
+        faceMatch: match,
+      });
+
+  return {
+    ...result,
+    matchedEmployee: {
+      id: matchedContext.employee.id,
+      name: matchedContext.employee.name,
+      empCode: matchedContext.employee.emp_code || null,
+    },
+    kioskHost: {
+      id: hostContext.employee.id,
+      name: hostContext.employee.name,
+    },
+    faceMatch: match,
+  };
+}
+
+async function syncOffline({ orgId, empId, body, req }) {
+  const records = Array.isArray(body.records) ? body.records : [];
+
+  if (records.length === 0) {
+    throw createError('ATT_SYNC_001', 'Offline sync requires at least one record', 422);
+  }
+
+  const timezone = await getOrgTimezone(orgId);
+  const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
+  const results = [];
+
+  for (const [index, record] of records.entries()) {
+    const clientRecordId = record.clientRecordId || record.client_record_id;
+    const capturedAt = record.timestamp ? new Date(record.timestamp) : new Date();
+    const lat = Number(record.lat ?? record.latitude ?? record.location?.latitude);
+    const lng = Number(record.lng ?? record.longitude ?? record.location?.longitude);
+
+    if (!clientRecordId) {
+      results.push({ index, status: 'error', code: 'ATT_SYNC_002', message: 'clientRecordId is required' });
+      continue;
+    }
+
+    const existingByClientId = await Attendance.findOne({ where: { org_id: orgId, client_record_id: clientRecordId } });
+    if (existingByClientId) {
+      results.push({ index, status: 'duplicate', attendanceId: existingByClientId.id });
+      continue;
+    }
+
+    try {
+      const gpsPayload = {
+        lat,
+        lng,
+        accuracy: record.accuracy,
+        altitude: record.altitude,
+        speed: record.speed,
+        isMocked: Boolean(record.isMocked),
+      };
+
+      await validateLocationForBranch(branch, gpsPayload);
+      await validateVelocity({ orgId, empId, lat, lng, timestamp: capturedAt });
+
+      const selfieBuffer = faceService.decodeSelfie(record.selfieBase64);
+      if (Array.isArray(record.faceEmbedding) || selfieBuffer) {
+        await faceService.verifyFace(empId, orgId, record.faceEmbedding || null, selfieBuffer);
+      } else if (Number(record.faceScore || 0) < 0.8) {
+        throw createError('FACE_003', 'Offline face score is below threshold', 401);
+      }
+
+      const date = getDateStringInTimezone(capturedAt, timezone);
+      const type = String(record.type || 'check_in').toLowerCase();
+
+      if (type === 'check_out' || type === 'checkout') {
+        const attendance = await Attendance.findOne({
+          where: {
+            org_id: orgId,
+            emp_id: empId,
+            date,
+          },
+          order: [['created_at', 'DESC']],
+        });
+
+        if (!attendance) {
+          results.push({ index, status: 'conflict', message: 'No attendance record found for offline checkout' });
+          continue;
+        }
+
+        const session = await getOpenSession(attendance.id);
+        if (!session) {
+          results.push({ index, status: 'conflict', attendanceId: attendance.id, message: 'No open session found for offline checkout' });
+          continue;
+        }
+
+        const workedMinutes = Math.max(
+          0,
+          Math.round((capturedAt.getTime() - new Date(session.check_in_time).getTime()) / 60000)
+        );
+
+        await session.update({
+          check_out_time: capturedAt,
+          check_out_lat: lat,
+          check_out_lng: lng,
+          worked_minutes: workedMinutes,
+          status: 'completed',
+          is_undo_eligible: false,
+        });
+
+        const sessions = await getAttendanceSessions(attendance.id);
+        const totalWorkedMinutes = sessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
+        const leaveApproval = await getLeaveApprovalForDate(orgId, empId, attendance.date);
+        const computed = computeAttendanceStatus(
+          {
+            date: attendance.date,
+            first_check_in: attendance.first_check_in,
+            last_check_out: capturedAt,
+            total_worked_minutes: totalWorkedMinutes,
+          },
+          shift,
+          leaveApproval,
+          timezone
+        );
+
+        await attendance.update({
+          last_check_out: capturedAt,
+          total_worked_minutes: totalWorkedMinutes,
+          status: computed.status,
+          is_late: computed.isLate,
+          late_by_minutes: computed.lateByMinutes || 0,
+          is_overtime: computed.isOvertime,
+          overtime_minutes: computed.overtimeMinutes,
+          is_early_checkout: computed.isEarlyCheckout,
+          early_by_minutes: computed.earlyByMinutes || 0,
+          check_out_type: computed.checkOutType,
+          source: 'offline_sync',
+          client_record_id: attendance.client_record_id || clientRecordId,
+          is_finalised: true,
+        });
+
+        results.push({ index, status: 'synced', attendanceId: attendance.id, sessionId: session.id });
+        continue;
+      }
+
+      let attendance = await Attendance.findOne({
+        where: {
+          org_id: orgId,
+          emp_id: empId,
+          date,
+        },
+      });
+
+      if (attendance && attendance.first_check_in) {
+        results.push({ index, status: 'conflict', attendanceId: attendance.id, message: 'Attendance already exists for this date' });
+        continue;
+      }
+
+      if (!attendance) {
+        attendance = await Attendance.create({
+          org_id: orgId,
+          emp_id: empId,
+          branch_id: employee.branch_id,
+          shift_id: employee.shift_id,
+          date,
+          status: 'pending',
+          first_check_in: capturedAt,
+          session_count: 1,
+          total_worked_minutes: 0,
+          is_anomaly: Number(record.accuracy) > 50,
+          source: 'offline_sync',
+          client_record_id: clientRecordId,
+        });
+      } else {
+        await attendance.update({
+          status: 'pending',
+          first_check_in: capturedAt,
+          session_count: 1,
+          total_worked_minutes: 0,
+          is_anomaly: attendance.is_anomaly || Number(record.accuracy) > 50,
+          source: 'offline_sync',
+          auto_absent_overridden: attendance.status === 'absent',
+          client_record_id: clientRecordId,
+          is_finalised: false,
+        });
+      }
+
+      const session = await AttendanceSession.create({
+        attendance_id: attendance.id,
+        org_id: orgId,
+        emp_id: empId,
+        session_number: 1,
+        check_in_time: capturedAt,
+        check_in_lat: lat,
+        check_in_lng: lng,
+        status: 'open',
+        worked_minutes: 0,
+      });
+
+      await log(req.employee, 'attendance.offline_sync', { type: 'attendance', id: attendance.id }, null, { clientRecordId }, req);
+      results.push({ index, status: 'synced', attendanceId: attendance.id, sessionId: session.id });
+    } catch (error) {
+      results.push({
+        index,
+        status: 'error',
+        code: error.code || 'ATT_SYNC_003',
+        message: error.message,
+      });
+    }
+  }
+
+  return {
+    synced: results.filter((result) => result.status === 'synced').length,
+    duplicates: results.filter((result) => result.status === 'duplicate').length,
+    conflicts: results.filter((result) => result.status === 'conflict').length,
+    failed: results.filter((result) => result.status === 'error').length,
+    results,
   };
 }
 
@@ -648,7 +1736,7 @@ async function undoCheckout({ orgId, empId, req }) {
   });
 
   await redisClient.del(undoKey, getCooldownKey(orgId, empId));
-  const undoJob = await checkoutGrace.getJob(`checkout_grace_${lastSession.id}`);
+  const undoJob = await checkoutGrace.getJob(getUndoExpiryJobId(lastSession.id));
   if (undoJob) {
     await undoJob.remove().catch(() => {});
   }
@@ -661,6 +1749,22 @@ async function listAttendance(orgId, query) {
   const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
   const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 100);
   const offset = (page - 1) * limit;
+
+  if (query.status === 'not_marked') {
+    const syntheticRows = await getSyntheticNotMarkedAttendance(orgId, query);
+    const pagedRows = syntheticRows.slice(offset, offset + limit);
+
+    return {
+      attendance: pagedRows,
+      pagination: {
+        page,
+        limit,
+        count: syntheticRows.length,
+        totalPages: Math.ceil(syntheticRows.length / limit) || 1,
+      },
+    };
+  }
+
   const where = { org_id: orgId };
 
   if (query.date) {
@@ -681,6 +1785,10 @@ async function listAttendance(orgId, query) {
     where.status = query.status;
   }
 
+  if (query.isLate === 'true' || query.isLate === true) {
+    where.is_late = true;
+  }
+
   if (query.branch) {
     where.branch_id = query.branch;
   }
@@ -698,25 +1806,7 @@ async function listAttendance(orgId, query) {
   });
 
   return {
-    attendance: result.rows.map((row) => ({
-      id: row.id,
-      date: row.date,
-      status: row.status,
-      totalWorkedMins: row.total_worked_minutes || 0,
-      sessionsToday: row.session_count || 0,
-      checkInTime: row.first_check_in,
-      checkOutTime: row.last_check_out,
-      workingHours: Number(row.total_worked_minutes || 0) / 60,
-      isLate: Boolean(row.is_late),
-      isAnomaly: Boolean(row.is_anomaly),
-      employee: row.employee
-        ? {
-            id: row.employee.id,
-            name: row.employee.name,
-            email: row.employee.email,
-          }
-        : null,
-    })),
+    attendance: result.rows.map(toAttendanceListItem),
     pagination: {
       page,
       limit,
@@ -727,6 +1817,68 @@ async function listAttendance(orgId, query) {
 }
 
 async function exportAttendance(orgId, query) {
+  if (query.status === 'not_marked') {
+    const [notMarkedRows, branches] = await Promise.all([
+      getSyntheticNotMarkedAttendance(orgId, query),
+      Branch.findAll({
+        where: { org_id: orgId },
+        attributes: ['id', 'name'],
+      }),
+    ]);
+    const branchNameById = branches.reduce((accumulator, branch) => {
+      accumulator[branch.id] = branch.name;
+      return accumulator;
+    }, {});
+    const rows = [
+      [
+        'Date',
+        'Employee Name',
+        'Employee Code',
+        'Employee Email',
+        'Branch',
+        'Status',
+        'First Check In',
+        'Last Check Out',
+        'Worked Minutes',
+        'Sessions',
+        'Late',
+        'Anomaly',
+        'Manual',
+      ],
+      ...notMarkedRows.map((row) => [
+        row.date,
+        row.employee?.name || '',
+        row.employee?.emp_code || '',
+        row.employee?.email || '',
+        branchNameById[row.employee?.branch_id] || '',
+        row.status,
+        '',
+        '',
+        0,
+        0,
+        'No',
+        'No',
+        'No',
+      ]),
+    ];
+    const filenameDate = new Date().toISOString().slice(0, 10);
+    const format = String(query.format || 'csv').toLowerCase();
+
+    if (format === 'xlsx') {
+      return {
+        filename: `attendance-export-${filenameDate}.xlsx`,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        body: buildWorkbookBuffer('Attendance', rows),
+      };
+    }
+
+    return {
+      filename: `attendance-export-${filenameDate}.csv`,
+      contentType: 'text/csv; charset=utf-8',
+      body: `${buildCsv(rows)}\r\n`,
+    };
+  }
+
   const where = { org_id: orgId };
 
   if (query.date) {
@@ -858,15 +2010,17 @@ async function getTodayStats(orgId) {
     where: { org_id: orgId, status: 'pending' },
   });
 
+  const pendingCount = rows.filter((row) => row.status === 'pending').length;
   const presentCount = rows.filter((row) => row.status === 'present').length;
   const leaveCount = rows.filter((row) => row.status === 'on_leave').length;
   const recordedAbsentCount = rows.filter((row) => row.status === 'absent').length;
-  const absentCount = Math.max(employeeCount - presentCount - leaveCount, recordedAbsentCount);
+  const absentCount = Math.max(employeeCount - presentCount - pendingCount - leaveCount, recordedAbsentCount);
   const lateCount = rows.filter((row) => row.is_late).length;
 
   return {
     employeeCount,
     checkedInCount: rows.filter((row) => row.first_check_in).length,
+    pendingCount,
     presentCount,
     absentCount,
     leaveCount,
@@ -981,8 +2135,29 @@ async function getLiveBoard(orgId, query) {
     order: [['updated_at', 'DESC']],
   });
 
+  const attendanceIds = openAttendances.map((attendance) => attendance.id);
+  const sessions = attendanceIds.length > 0
+    ? await AttendanceSession.findAll({
+        where: {
+          attendance_id: {
+            [Op.in]: attendanceIds,
+          },
+        },
+        order: [['session_number', 'DESC']],
+      })
+    : [];
+
+  const latestSessionByAttendanceId = sessions.reduce((accumulator, session) => {
+    if (!accumulator[session.attendance_id]) {
+      accumulator[session.attendance_id] = session;
+    }
+    return accumulator;
+  }, {});
+
   const rows = openAttendances.map((attendance) => {
-    const isCheckedIn = Boolean(attendance.first_check_in) && !attendance.last_check_out;
+    const latestSession = latestSessionByAttendanceId[attendance.id] || null;
+    const isCheckedIn = Boolean(latestSession && latestSession.status === 'open');
+
     if (isCheckedIn) {
       onlineEmployeeIds.add(attendance.emp_id);
     }
@@ -993,8 +2168,8 @@ async function getLiveBoard(orgId, query) {
       empName: attendance.employee ? attendance.employee.name : 'Unknown',
       status: attendance.status,
       isCheckedIn,
-      time: attendance.last_check_out || attendance.first_check_in,
-      selfieUrl: null,
+      time: latestSession?.check_out_time || latestSession?.check_in_time || attendance.last_check_out || attendance.first_check_in,
+      selfieUrl: latestSession?.selfie_url || null,
       totalWorkedMins: attendance.total_worked_minutes || 0,
     };
   });
@@ -1120,10 +2295,35 @@ async function manualMark({ orgId, id, body, req }) {
   return getAttendanceById(orgId, attendance.id);
 }
 
+async function setAnomalyFlag({ orgId, id, isAnomaly, req }) {
+  const attendance = await Attendance.findOne({ where: { id, org_id: orgId } });
+  if (!attendance) {
+    throw createError('HTTP_404', 'Attendance record not found', 404);
+  }
+
+  const previous = attendance.toJSON();
+  await attendance.update({
+    is_anomaly: Boolean(isAnomaly),
+  });
+
+  await log(
+    req.employee,
+    isAnomaly ? 'attendance.flag_anomaly' : 'attendance.unflag_anomaly',
+    { type: 'attendance', id: attendance.id },
+    previous,
+    attendance.toJSON(),
+    req
+  );
+
+  return getAttendanceById(orgId, attendance.id);
+}
+
 module.exports = {
   requestChallenge,
   checkIn,
   checkOut,
+  kioskScan,
+  syncOffline,
   undoCheckout,
   getTodayState,
   listAttendance,
@@ -1131,6 +2331,7 @@ module.exports = {
   getAttendanceHistory,
   getAttendanceById,
   manualMark,
+  setAnomalyFlag,
   getTodayStats,
   getTrendStats,
   getTopLateEmployees,

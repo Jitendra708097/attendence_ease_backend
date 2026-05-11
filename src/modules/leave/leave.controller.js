@@ -43,6 +43,59 @@ async function pending(req, res) {
   }
 }
 
+async function adminList(req, res) {
+  try {
+    const data = await leaveService.listAdminLeaves(req.org_id, req.query);
+    return ok(res, data, 'Leave requests fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function adminDetail(req, res) {
+  try {
+    const data = await leaveService.getAdminLeaveDetail(req.org_id, req.params.id);
+    return ok(res, data, 'Leave request fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_007', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function adminContext(req, res) {
+  try {
+    const data = await leaveService.getAdminLeaveContext(req.org_id, req.params.id);
+    return ok(res, data, 'Leave request context fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_008', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function calendar(req, res) {
+  try {
+    const data = await leaveService.listLeaveCalendar(req.org_id, req.query);
+    return ok(res, data, 'Leave calendar fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_009', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function balances(req, res) {
+  try {
+    const data = await leaveService.listLeaveBalances(req.org_id, req.query);
+    return ok(res, data, 'Leave balances fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function types(req, res) {
+  try {
+    return ok(res, leaveService.listLeaveTypes(), 'Leave types fetched');
+  } catch (error) {
+    return fail(res, error.code || 'LEAVE_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function approve(req, res) {
   try {
     const data = await leaveService.approveLeave({
@@ -91,6 +144,12 @@ module.exports = {
   create,
   balance,
   pending,
+  adminList,
+  adminDetail,
+  adminContext,
+  calendar,
+  balances,
+  types,
   approve,
   reject,
   remove,

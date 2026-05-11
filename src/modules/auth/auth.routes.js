@@ -53,6 +53,8 @@ const resetPasswordLimiter = rateLimit({
 });
 
 router.post('/login', loginLimiter, asyncHandler(authController.login));
+router.post('/impersonation/exchange', asyncHandler(authController.exchangeImpersonationCode));
+router.post('/impersonation/exit', authenticate, asyncHandler(authController.exitImpersonationSession));
 router.post('/refresh', asyncHandler(authController.refresh));
 router.post('/logout', authenticate, orgGuard, asyncHandler(authController.logout));
 router.post('/change-password', authenticate, orgGuard, asyncHandler(authController.changePassword));

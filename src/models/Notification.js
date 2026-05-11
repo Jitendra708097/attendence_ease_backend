@@ -27,6 +27,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: false,
       },
+      data: {
+        type: DataTypes.JSONB,
+        defaultValue: {},
+      },
       action_url: DataTypes.STRING,
       is_read: {
         type: DataTypes.BOOLEAN,

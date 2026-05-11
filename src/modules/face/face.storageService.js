@@ -16,7 +16,7 @@ if (isCloudinaryConfigured) {
   });
 }
 
-async function uploadEnrollmentSelfie(buffer, orgId, empId) {
+async function uploadImage(buffer, folder, publicId) {
   if (!isCloudinaryConfigured) {
     return null;
   }
@@ -24,8 +24,8 @@ async function uploadEnrollmentSelfie(buffer, orgId, empId) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        folder: `attendease/face-enrollment/${orgId}`,
-        public_id: `${empId}-${Date.now()}`,
+        folder,
+        public_id: publicId,
         resource_type: 'image',
       },
       (error, result) => {
@@ -45,6 +45,18 @@ async function uploadEnrollmentSelfie(buffer, orgId, empId) {
   });
 }
 
+async function uploadEnrollmentSelfie(buffer, orgId, empId) {
+  return uploadImage(buffer, `attendease/face-enrollment/${orgId}`, `${empId}-${Date.now()}`);
+}
+
+async function uploadAttendanceSelfie(buffer, orgId, empId, action = 'check-out') {
+  return uploadImage(
+    buffer,
+    `attendease/attendance/${orgId}/${empId}`,
+    `${action}-${Date.now()}`
+  );
+}
+
 async function deleteEnrollmentSelfie(publicId) {
   if (!isCloudinaryConfigured || !publicId) {
     return false;
@@ -59,6 +71,7 @@ async function deleteEnrollmentSelfie(publicId) {
 }
 
 module.exports = {
+  uploadAttendanceSelfie,
   uploadEnrollmentSelfie,
   deleteEnrollmentSelfie,
 };

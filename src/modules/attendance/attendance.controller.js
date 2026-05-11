@@ -38,6 +38,34 @@ async function checkOut(req, res) {
   }
 }
 
+async function kioskScan(req, res) {
+  try {
+    const data = await attendanceService.kioskScan({
+      orgId: req.org_id,
+      hostEmpId: req.employee.id,
+      body: req.body,
+      req,
+    });
+    return ok(res, data, 'Kiosk attendance recorded');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_KIOSK_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function sync(req, res) {
+  try {
+    const data = await attendanceService.syncOffline({
+      orgId: req.org_id,
+      empId: req.employee.id,
+      body: req.body,
+      req,
+    });
+    return ok(res, data, 'Offline attendance synced');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_SYNC_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function undoCheckout(req, res) {
   try {
     const data = await attendanceService.undoCheckout({
@@ -112,7 +140,10 @@ async function live(req, res) {
 
 async function exportCsv(req, res) {
   try {
-    const result = await attendanceService.exportAttendance(req.org_id, req.query);
+    const filters = req.method === 'POST'
+      ? { ...req.query, ...req.body }
+      : req.query;
+    const result = await attendanceService.exportAttendance(req.org_id, filters);
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
     return res.status(200).send(result.body);
@@ -157,10 +188,40 @@ async function activity(req, res) {
   }
 }
 
+async function flagAnomaly(req, res) {
+  try {
+    const data = await attendanceService.setAnomalyFlag({
+      orgId: req.org_id,
+      id: req.params.id,
+      isAnomaly: true,
+      req,
+    });
+    return ok(res, data, 'Attendance marked as anomaly');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function unflagAnomaly(req, res) {
+  try {
+    const data = await attendanceService.setAnomalyFlag({
+      orgId: req.org_id,
+      id: req.params.id,
+      isAnomaly: false,
+      req,
+    });
+    return ok(res, data, 'Attendance anomaly cleared');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   challenge,
   checkIn,
   checkOut,
+  kioskScan,
+  sync,
   undoCheckout,
   today,
   list,
@@ -173,4 +234,6 @@ module.exports = {
   trend,
   topLate,
   activity,
+  flagAnomaly,
+  unflagAnomaly,
 };

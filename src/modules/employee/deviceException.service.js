@@ -101,6 +101,7 @@ async function createDeviceException({ orgId, empId, tempDeviceId, reason, appro
         title: 'Device exception pending',
         body: `${employee.name} requested a one-time device exception.`,
         actionUrl: '/device-exceptions',
+        data: { exception_id: exception.id },
       },
       {
         excludeEmployeeIds: [empId],
@@ -113,6 +114,10 @@ async function createDeviceException({ orgId, empId, tempDeviceId, reason, appro
 
 async function listDeviceExceptions({ orgId, query = {} }) {
   const where = { org_id: orgId };
+
+  if (query.requestId || query.exceptionId || query.id) {
+    where.id = query.requestId || query.exceptionId || query.id;
+  }
 
   if (query.empId) {
     where.emp_id = query.empId;

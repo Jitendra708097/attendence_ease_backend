@@ -11,6 +11,8 @@ router.use(authenticate, orgGuard, roleGuard('admin', 'manager', 'superadmin'));
 
 router.get('/', asyncHandler(departmentController.listDepartments));
 router.post('/', asyncHandler(departmentController.createDepartment));
+router.get('/:id/employees', asyncHandler(departmentController.listDepartmentEmployees));
+router.get('/:id/stats', asyncHandler(departmentController.getDepartmentStats));
 router.get('/:id', asyncHandler(departmentController.getDepartment));
 router.put('/:id', asyncHandler(departmentController.updateDepartment));
 router.delete('/:id', asyncHandler(departmentController.deleteDepartment));

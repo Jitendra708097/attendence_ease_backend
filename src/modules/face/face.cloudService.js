@@ -54,6 +54,45 @@ async function verifyWithRekognition(selfieBuffer, employee) {
   }
 }
 
+async function searchFacesByImage(selfieBuffer, options = {}) {
+  if (!canUseRekognition() || !Buffer.isBuffer(selfieBuffer)) {
+    return {
+      searched: false,
+      matches: [],
+      provider: 'rekognition_skipped',
+    };
+  }
+
+  const command = new SearchFacesByImageCommand({
+    CollectionId: env.aws.rekognitionCollectionId,
+    Image: {
+      Bytes: selfieBuffer,
+    },
+    FaceMatchThreshold: options.threshold || 95,
+    MaxFaces: options.maxFaces || 5,
+  });
+
+  try {
+    const response = await rekognitionClient.send(command);
+    return {
+      searched: true,
+      provider: 'rekognition',
+      matches: (response.FaceMatches || [])
+        .filter((item) => item.Face && item.Face.FaceId)
+        .map((item) => ({
+          faceId: item.Face.FaceId,
+          similarity: item.Similarity || 0,
+        })),
+    };
+  } catch (error) {
+    return {
+      searched: false,
+      provider: 'rekognition_error',
+      matches: [],
+    };
+  }
+}
+
 /**
  * @param {string} employeeId
  * @param {Buffer} selfieBuffer
@@ -110,6 +149,7 @@ async function deleteFromRekognition(faceId) {
 module.exports = {
   canUseRekognition,
   verifyWithRekognition,
+  searchFacesByImage,
   enrollWithRekognition,
   deleteFromRekognition,
 };

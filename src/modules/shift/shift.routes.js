@@ -11,6 +11,8 @@ router.use(authenticate, orgGuard, roleGuard('admin', 'manager', 'superadmin'));
 
 router.get('/', asyncHandler(shiftController.listShifts));
 router.post('/', asyncHandler(shiftController.createShift));
+router.get('/:id', asyncHandler(shiftController.getShift));
+router.get('/:id/employees', asyncHandler(shiftController.listShiftEmployees));
 router.put('/:id', asyncHandler(shiftController.updateShift));
 router.delete('/:id', asyncHandler(shiftController.deleteShift));
 

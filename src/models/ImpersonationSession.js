@@ -28,6 +28,30 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      expires_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      last_seen_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      ended_by: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      end_reason: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      ended_from_ip: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      ended_user_agent: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
     },
     {
       tableName: 'impersonation_sessions',

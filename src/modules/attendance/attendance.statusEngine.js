@@ -86,16 +86,18 @@ function computeAttendanceStatus(attendance, shift, leaveApprovals, timezone = '
   }
 
   const totalWorked = Number(attendance.total_worked_minutes || 0);
+  const breakMinutes = Number(shift.break_minutes || 0);
+  const netWorked = Math.max(totalWorked - breakMinutes, 0);
   const overtimeAfter = Number(shift.overtime_after_minutes || 480);
   const halfDayAfter = Number(shift.half_day_after_minutes || 240);
   const absentAfter = Number(shift.absent_after_minutes || 120);
-  const overtimeMinutes = totalWorked > overtimeAfter ? totalWorked - overtimeAfter : 0;
+  const overtimeMinutes = netWorked > overtimeAfter ? netWorked - overtimeAfter : 0;
 
   let status = 'absent';
 
-  if (totalWorked >= halfDayAfter) {
+  if (netWorked >= halfDayAfter) {
     status = 'present';
-  } else if (totalWorked >= absentAfter) {
+  } else if (netWorked >= absentAfter) {
     status = 'half_day_early';
   }
 
@@ -128,6 +130,7 @@ function computeAttendanceStatus(attendance, shift, leaveApprovals, timezone = '
     lateByMinutes,
     isOvertime: overtimeMinutes >= Number(shift.min_overtime_minutes || 30),
     overtimeMinutes,
+    netWorkedMinutes: netWorked,
     isEarlyCheckout,
     earlyByMinutes,
     checkOutType,

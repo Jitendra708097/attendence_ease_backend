@@ -7,12 +7,18 @@ const branchController = require('./branch.controller');
 
 const router = express.Router();
 
-router.use(authenticate, orgGuard, roleGuard('admin', 'manager', 'superadmin'));
+router.use(authenticate, orgGuard);
+
+router.get('/current/geofence', asyncHandler(branchController.getCurrentBranchGeofence));
+
+router.use(roleGuard('admin', 'manager', 'superadmin'));
 
 router.get('/', asyncHandler(branchController.listBranches));
 router.post('/', asyncHandler(branchController.createBranch));
-router.get('/current/geofence', asyncHandler(branchController.getCurrentBranchGeofence));
+router.get('/:id/employees', asyncHandler(branchController.listBranchEmployees));
+router.get('/:id/stats/today', asyncHandler(branchController.getBranchTodayStats));
 router.get('/:id/geofence', asyncHandler(branchController.getGeofence));
+router.post('/:id/geofence/test', asyncHandler(branchController.testGeofence));
 router.put('/:id/geofence', asyncHandler(branchController.updateGeofence));
 router.get('/:id', asyncHandler(branchController.getBranch));
 router.put('/:id', asyncHandler(branchController.updateBranch));

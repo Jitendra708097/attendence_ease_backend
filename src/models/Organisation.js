@@ -33,6 +33,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
+      suspended_at: DataTypes.DATE,
+      suspended_by: DataTypes.UUID,
+      suspension_reason: DataTypes.TEXT,
+      cancelled_at: DataTypes.DATE,
+      cancelled_by: DataTypes.UUID,
+      cancellation_reason: DataTypes.TEXT,
     },
     {
       tableName: 'organisations',

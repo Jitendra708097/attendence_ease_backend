@@ -20,9 +20,14 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       device_id: DataTypes.STRING,
+      platform: DataTypes.STRING,
       is_primary: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
+      },
+      is_active: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
       },
     },
     {
@@ -31,6 +36,7 @@ module.exports = (sequelize, DataTypes) => {
       underscored: true,
       indexes: [
         { unique: true, fields: ['emp_id', 'fcm_token'] },
+        { fields: ['org_id', 'emp_id', 'is_active'] },
       ],
     }
   );

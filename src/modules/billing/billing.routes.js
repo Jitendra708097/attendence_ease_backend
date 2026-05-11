@@ -3,6 +3,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const authenticate = require('../../middleware/authenticate');
 const orgGuard = require('../../middleware/orgGuard');
 const roleGuard = require('../../middleware/roleGuard');
+const blockImpersonatedWrites = require('../../middleware/blockImpersonatedWrites');
 const billingController = require('./billing.controller');
 
 const router = express.Router();
@@ -18,7 +19,7 @@ router.use(authenticate, orgGuard, roleGuard('admin', 'superadmin'), idempotency
 router.get('/current-plan', asyncHandler(billingController.currentPlan));
 router.get('/invoices', asyncHandler(billingController.invoices));
 router.get('/invoices/:invoiceId/download', asyncHandler(billingController.downloadInvoice));
-router.post('/invoices/:invoiceId/create-order', asyncHandler(billingController.createOrder));
-router.post('/verify-payment', asyncHandler(billingController.verifyPayment));
+router.post('/invoices/:invoiceId/create-order', blockImpersonatedWrites, asyncHandler(billingController.createOrder));
+router.post('/verify-payment', blockImpersonatedWrites, asyncHandler(billingController.verifyPayment));
 
 module.exports = router;

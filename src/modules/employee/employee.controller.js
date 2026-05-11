@@ -102,6 +102,25 @@ async function attendanceSummary(req, res) {
   }
 }
 
+async function getNotificationPreferences(req, res) {
+  try {
+    const data = await employeeService.getOwnNotificationPreferences(req.org_id, req.employee.id);
+    return ok(res, data, 'Notification preferences fetched');
+  } catch (error) {
+    return fail(res, error.code || 'EMP_012', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function updateNotificationPreferences(req, res) {
+  try {
+    const data = await employeeService.updateOwnNotificationPreferences(req.org_id, req.employee.id, req.body);
+    await log(req.employee, 'employee.notification_preferences.update', { type: 'employee', id: req.employee.id }, null, data, req);
+    return ok(res, data, 'Notification preferences updated');
+  } catch (error) {
+    return fail(res, error.code || 'EMP_013', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function listDeviceExceptions(req, res) {
   try {
     const data = await deviceExceptionService.listDeviceExceptions({
@@ -143,6 +162,23 @@ async function createDeviceException(req, res) {
   }
 }
 
+async function requestOwnDeviceException(req, res) {
+  try {
+    const data = await deviceExceptionService.createDeviceException({
+      orgId: req.org_id,
+      empId: req.employee.id,
+      tempDeviceId: req.body.tempDeviceId,
+      reason: req.body.reason,
+      approveNow: false,
+      approvedBy: null,
+    });
+    await log(req.employee, 'device_exception.request', { type: 'device_exception', id: data.id }, null, data, req);
+    return ok(res, data, 'Device exception request sent', 201);
+  } catch (error) {
+    return fail(res, error.code || 'DEV_007', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function approveDeviceException(req, res) {
   try {
     const data = await deviceExceptionService.approveDeviceException({
@@ -180,9 +216,12 @@ module.exports = {
   deleteEmployees,
   bulkUpload,
   attendanceSummary,
+  getNotificationPreferences,
+  updateNotificationPreferences,
   listDeviceExceptions,
   listOwnDeviceExceptions,
   createDeviceException,
+  requestOwnDeviceException,
   approveDeviceException,
   rejectDeviceException,
 };

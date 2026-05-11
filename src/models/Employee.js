@@ -44,6 +44,7 @@ module.exports = (sequelize, DataTypes) => {
       },
       face_embedding_id: DataTypes.STRING,
       face_enrolled_at: DataTypes.DATE,
+      registered_face_url: DataTypes.STRING,
       is_face_enrolled: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
@@ -58,6 +59,10 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 0,
       },
       leave_balance: {
+        type: DataTypes.JSONB,
+        defaultValue: {},
+      },
+      notification_preferences: {
         type: DataTypes.JSONB,
         defaultValue: {},
       },

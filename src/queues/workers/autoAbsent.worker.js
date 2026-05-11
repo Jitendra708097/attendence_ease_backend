@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const { Attendance, Employee, Holiday, LeaveRequest, Organisation, Shift } = require('../../models');
-const { autoAbsent } = require('../index');
+const { autoAbsent, notification } = require('../index');
 const { scheduleDailyJobs } = require('../schedulers/daily.scheduler');
 
 let workerRegistered = false;
@@ -105,6 +105,14 @@ async function processAutoAbsent(job) {
   const leaveEmpIds = await getApprovedLeaveEmployeeIds(orgId, dateString);
   const holidayInfo = await getHolidayBranchIds(orgId, dateString);
 
+  const employeesMissingBranch = employees.filter((employee) => !employee.branch_id);
+  if (employeesMissingBranch.length > 0) {
+    const sampleIds = employeesMissingBranch.slice(0, 5).map((employee) => employee.id).join(', ');
+    throw new Error(
+      `Auto-absent blocked: ${employeesMissingBranch.length} active employee(s) in shift ${shiftId} are missing branch_id. Fix employee branch assignment before retrying. Sample employee ids: ${sampleIds}`
+    );
+  }
+
   const candidates = employees.filter((employee) => {
     if (existingEmpIds.has(employee.id)) {
       return false;
@@ -131,7 +139,7 @@ async function processAutoAbsent(job) {
     };
   }
 
-  await Attendance.bulkCreate(
+  const createdRows = await Attendance.bulkCreate(
     candidates.map((employee) => ({
       org_id: orgId,
       emp_id: employee.id,
@@ -146,8 +154,28 @@ async function processAutoAbsent(job) {
     })),
     {
       ignoreDuplicates: true,
+      returning: true,
     }
   );
+
+  for (const attendance of createdRows) {
+    await notification.add(
+      'send_push',
+      {
+        orgId,
+        empIds: [attendance.emp_id],
+        type: 'absent_marked',
+        title: 'Absent marked',
+        body: `You were marked absent for ${dateString}.`,
+        actionUrl: 'attendease://attendance',
+        data: { attendance_id: attendance.id, date: dateString },
+      },
+      {
+        jobId: `absent_marked_${attendance.id}`,
+        removeOnComplete: true,
+      }
+    );
+  }
 
   return {
     created: candidates.length,

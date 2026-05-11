@@ -13,8 +13,8 @@ function validateBranchPayload(body = {}) {
 }
 
 function validatePolygon(polygon) {
-  if (!Array.isArray(polygon) || polygon.length < 3) {
-    return [{ field: 'polygon', message: 'Polygon must contain at least 3 points' }];
+  if (!Array.isArray(polygon) || (polygon.length > 0 && polygon.length < 3)) {
+    return [{ field: 'polygon', message: 'Polygon must be empty or contain at least 3 points' }];
   }
 
   return [];
@@ -91,6 +91,33 @@ async function updateGeofence(req, res) {
   }
 }
 
+async function listBranchEmployees(req, res) {
+  try {
+    const data = await branchService.listBranchEmployees(req.org_id, req.params.id);
+    return ok(res, data, 'Branch employees fetched');
+  } catch (error) {
+    return fail(res, error.code || 'BRANCH_013', error.message, [], error.statusCode || 404);
+  }
+}
+
+async function getBranchTodayStats(req, res) {
+  try {
+    const data = await branchService.getBranchTodayStats(req.org_id, req.params.id);
+    return ok(res, data, 'Branch attendance stats fetched');
+  } catch (error) {
+    return fail(res, error.code || 'BRANCH_014', error.message, [], error.statusCode || 404);
+  }
+}
+
+async function testGeofence(req, res) {
+  try {
+    const data = await branchService.testBranchCoordinate(req.org_id, req.params.id, req.body);
+    return ok(res, data, 'Coordinate tested');
+  } catch (error) {
+    return fail(res, error.code || 'BRANCH_015', error.message, [], error.statusCode || 400);
+  }
+}
+
 async function deleteBranch(req, res) {
   try {
     await branchService.deleteBranch(req.org_id, req.params.id);
@@ -130,6 +157,9 @@ module.exports = {
   updateBranch,
   getGeofence,
   updateGeofence,
+  listBranchEmployees,
+  getBranchTodayStats,
+  testGeofence,
   deleteBranch,
   getCurrentBranchGeofence,
 };

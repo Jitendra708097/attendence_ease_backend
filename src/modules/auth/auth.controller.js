@@ -20,6 +20,18 @@ async function login(req, res) {
     const data = await authService.login(req.body);
     return ok(res, data, 'Login successful');
   } catch (error) {
+    try {
+      await log(
+        null,
+        'auth.login_failed',
+        { type: 'auth', id: String(req.body?.email || '').trim().toLowerCase() || null },
+        null,
+        { email: String(req.body?.email || '').trim().toLowerCase() || null, code: error.code || 'AUTH_001' },
+        req
+      );
+    } catch (_) {
+      // Audit write failure must not change the login failure response.
+    }
     return fail(res, error.code || 'AUTH_001', error.message, [], error.statusCode || 401);
   }
 }
@@ -114,6 +126,30 @@ async function resetPassword(req, res) {
   }
 }
 
+async function exchangeImpersonationCode(req, res) {
+  try {
+    const data = await authService.exchangeImpersonationCode({
+      code: req.body.code,
+    });
+
+    return ok(res, data, 'Impersonation handoff exchanged');
+  } catch (error) {
+    return fail(res, error.code || 'AUTH_019', error.message, [], error.statusCode || 401);
+  }
+}
+
+async function exitImpersonationSession(req, res) {
+  try {
+    const data = await authService.exitImpersonationSession({
+      employee: req.employee,
+    });
+
+    return ok(res, data, 'Impersonation session exited');
+  } catch (error) {
+    return fail(res, error.code || 'AUTH_022', error.message, [], error.statusCode || 400);
+  }
+}
+
 module.exports = {
   login,
   refresh,
@@ -121,4 +157,6 @@ module.exports = {
   changePassword,
   forgotPassword,
   resetPassword,
+  exchangeImpersonationCode,
+  exitImpersonationSession,
 };

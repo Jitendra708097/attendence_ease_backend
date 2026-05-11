@@ -31,6 +31,21 @@ function validateSettingsPayload(body = {}) {
     'allowRemoteCheckIn',
     'requireGeofence',
     'requireFaceRecognition',
+    'kioskModeEnabled',
+    'kioskRequiresOfficeGeofence',
+    'requireLiveness',
+    'allowEmployeeDeviceExceptionFlow',
+    'requireWifiVerification',
+    'checkoutReminderEnabled',
+    'autoAbsentEnabled',
+    'failedLoginAlertEnabled',
+    'billingOverrideAlertEnabled',
+    'orgConfigChangeAlertEnabled',
+    'leaveRequests',
+    'regularisation',
+    'billing',
+    'deviceExceptions',
+    'attendanceAnomalies',
   ];
 
   for (const field of booleanFields) {
@@ -45,6 +60,16 @@ function validateSettingsPayload(body = {}) {
       details.push({
         field: 'toleranceMinutes',
         message: 'Late tolerance must be a number between 0 and 180',
+      });
+    }
+  }
+
+  if (body.faceMatchThreshold !== undefined) {
+    const parsed = Number(body.faceMatchThreshold);
+    if (!Number.isFinite(parsed) || parsed < 0.5 || parsed > 0.99) {
+      details.push({
+        field: 'faceMatchThreshold',
+        message: 'Face match threshold must be between 0.50 and 0.99',
       });
     }
   }
@@ -79,6 +104,15 @@ async function settings(req, res) {
   }
 }
 
+async function settingsHealth(req, res) {
+  try {
+    const data = await orgService.getSettingsHealth(req.org_id);
+    return ok(res, data, 'Settings health fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ORG_013', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function uploadLogo(req, res) {
   if (!req.file || !req.file.buffer) {
     return fail(res, 'ORG_008', 'Organisation logo file is required', [
@@ -98,6 +132,16 @@ async function uploadLogo(req, res) {
     return ok(res, data.newValue, 'Organisation logo uploaded');
   } catch (error) {
     return fail(res, error.code || 'ORG_010', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function removeLogo(req, res) {
+  try {
+    const data = await orgService.removeOrgLogo(req.org_id);
+    await log(req.employee, 'org.remove_logo', { type: 'organisation', id: req.org_id }, data.oldValue, data.newValue, req);
+    return ok(res, data.newValue, 'Organisation logo removed');
+  } catch (error) {
+    return fail(res, error.code || 'ORG_014', error.message, error.details || [], error.statusCode || 400);
   }
 }
 
@@ -137,7 +181,9 @@ module.exports = {
   stats,
   info,
   settings,
+  settingsHealth,
   uploadLogo,
+  removeLogo,
   updateProfile,
   updateSettings,
 };

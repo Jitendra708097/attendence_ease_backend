@@ -13,6 +13,7 @@ async function log(actor, action, entity, oldVal, newVal, req) {
     ip_address: req.ip,
     user_agent: req.headers['user-agent'],
     impersonated_by: req.employee?.impersonatedBy || null,
+    impersonation_session_id: req.employee?.impersonationSessionId || null,
   });
 }
 

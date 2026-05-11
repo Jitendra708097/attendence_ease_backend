@@ -16,10 +16,8 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       emp_id: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.UUID,
+        allowNull: false,
       },
       session_number: {
         type: DataTypes.INTEGER,
@@ -31,34 +29,19 @@ module.exports = (sequelize, DataTypes) => {
       },
       check_out_time: DataTypes.DATE,
       check_in_lat: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.DECIMAL(10, 8),
       },
       check_in_lng: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.DECIMAL(11, 8),
       },
       check_out_lat: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.DECIMAL(10, 8),
       },
       check_out_lng: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.DECIMAL(11, 8),
       },
       selfie_url: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return null;
-        },
+        type: DataTypes.STRING,
       },
       worked_minutes: {
         type: DataTypes.INTEGER,
@@ -69,10 +52,8 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 'open',
       },
       is_undo_eligible: {
-        type: DataTypes.VIRTUAL,
-        get() {
-          return false;
-        },
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
       },
     },
     {

@@ -99,7 +99,7 @@ module.exports = {
       branch_id: { type: Sequelize.UUID, allowNull: false, references: { model: 'branches', key: 'id' } },
       shift_id: { type: Sequelize.UUID, allowNull: false, references: { model: 'shifts', key: 'id' } },
       date: { type: Sequelize.DATEONLY, allowNull: false },
-      status: { type: Sequelize.ENUM('present', 'absent', 'half_day', 'half_day_early', 'on_leave', 'holiday', 'weekend', 'not_marked'), defaultValue: 'not_marked' },
+      status: { type: Sequelize.ENUM('pending', 'present', 'absent', 'half_day', 'half_day_early', 'on_leave', 'holiday', 'weekend', 'incomplete', 'not_marked'), defaultValue: 'not_marked' },
       first_check_in: Sequelize.DATE,
       last_check_out: Sequelize.DATE,
       total_worked_minutes: { type: Sequelize.INTEGER, defaultValue: 0 },

@@ -8,7 +8,67 @@ function getUndoKey(orgId, empId, sessionId) {
 
 let workerRegistered = false;
 
-async function expireCheckoutGrace(job) {
+function getUndoExpiryJobId(sessionId) {
+  return `attendance_undo_expiry_${sessionId}`;
+}
+
+async function expireIncompleteSession(job) {
+  const { orgId, empId, attendanceId, sessionId } = job.data;
+
+  if (!orgId || !empId || !attendanceId || !sessionId) {
+    return {
+      expired: false,
+      reason: 'invalid_payload',
+    };
+  }
+
+  const session = await AttendanceSession.findOne({
+    where: {
+      id: sessionId,
+      attendance_id: attendanceId,
+      org_id: orgId,
+    },
+  });
+
+  if (!session) {
+    return {
+      expired: false,
+      reason: 'session_not_found',
+    };
+  }
+
+  if (session.check_out_time) {
+    return {
+      expired: false,
+      reason: 'session_already_completed',
+    };
+  }
+
+  await session.update({ status: 'auto_closed' });
+
+  const attendance = await Attendance.findOne({
+    where: {
+      id: attendanceId,
+      org_id: orgId,
+    },
+  });
+
+  if (attendance) {
+    await attendance.update({
+      status: 'incomplete',
+      is_finalised: true,
+    });
+  }
+
+  return {
+    expired: true,
+    attendanceId,
+    sessionId,
+    status: 'incomplete',
+  };
+}
+
+async function expireUndoWindow(job) {
   const { orgId, empId, attendanceId, sessionId } = job.data;
 
   if (!orgId || !empId || !attendanceId || !sessionId) {
@@ -34,6 +94,7 @@ async function expireCheckoutGrace(job) {
   }
 
   await redisClient.del(getUndoKey(orgId, empId, sessionId));
+  await session.update({ is_undo_eligible: false });
 
   const openSession = await AttendanceSession.findOne({
     where: {
@@ -62,6 +123,7 @@ async function expireCheckoutGrace(job) {
     expired: true,
     attendanceId,
     sessionId,
+    status: 'undo_expired',
   };
 }
 
@@ -70,7 +132,9 @@ function registerCheckoutGraceWorker() {
     return checkoutGrace;
   }
 
-  checkoutGrace.process('checkout_grace_expiry', expireCheckoutGrace);
+  checkoutGrace.process('incomplete_session_expiry', expireIncompleteSession);
+  checkoutGrace.process('checkout_grace_expiry', expireIncompleteSession);
+  checkoutGrace.process('undo_expiry', expireUndoWindow);
   checkoutGrace.on('failed', (job, error) => {
     console.error('[queue:checkout-grace] Job failed:', {
       jobId: job && job.id ? job.id : null,
@@ -84,4 +148,5 @@ function registerCheckoutGraceWorker() {
 
 module.exports = {
   registerCheckoutGraceWorker,
+  getUndoExpiryJobId,
 };

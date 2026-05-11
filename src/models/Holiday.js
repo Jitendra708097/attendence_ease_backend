@@ -19,6 +19,7 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: false,
       },
+      description: DataTypes.TEXT,
       date: { type: DataTypes.DATEONLY, allowNull: false },
       is_recurring: {
         type: DataTypes.BOOLEAN,
