@@ -1,19 +1,23 @@
 const { ImpersonationSession } = require('../models');
 const { unauthorized } = require('../utils/response');
 const { verifyAccessToken } = require('../utils/auth');
+const { getAccessTokenFromRequest } = require('../utils/authCookies');
+const { isTokenBlacklisted } = require('../utils/jwtBlacklist');
 
 const IMPERSONATION_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 async function authenticate(req, res, next) {
-  const authorization = req.headers.authorization || '';
+  const token = getAccessTokenFromRequest(req);
 
-  if (!authorization.startsWith('Bearer ')) {
+  if (!token) {
     return unauthorized(res, 'AUTH_001', 'Missing or invalid authorization token');
   }
 
-  const token = authorization.replace('Bearer ', '').trim();
-
   try {
+    if (await isTokenBlacklisted(token)) {
+      return unauthorized(res, 'AUTH_001', 'Token has been revoked');
+    }
+
     const payload = verifyAccessToken(token);
 
     if (payload.isImpersonated) {

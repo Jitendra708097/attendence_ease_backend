@@ -106,32 +106,6 @@ function isInsidePolygon(point, polygon = []) {
   return inside;
 }
 
-/**
- * Haversine fallback for circular radius
- * @param {{lat: number, lng: number}} point
- * @param {{lat: number, lng: number}} center
- * @param {number} radiusMeters
- * @returns {boolean}
- */
-function isWithinRadius(point, center, radiusMeters = 200) {
-  const toRadians = (value) => (value * Math.PI) / 180;
-  const earthRadius = 6371000;
-  const latitudeDelta = toRadians(center.lat - point.lat);
-  const longitudeDelta = toRadians(center.lng - point.lng);
-
-  const a =
-    Math.sin(latitudeDelta / 2) * Math.sin(latitudeDelta / 2) +
-    Math.cos(toRadians(point.lat)) *
-      Math.cos(toRadians(center.lat)) *
-      Math.sin(longitudeDelta / 2) *
-      Math.sin(longitudeDelta / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distance = earthRadius * c;
-
-  return distance <= radiusMeters;
-}
-
 function metersPerDegreeLng(lat) {
   return 111320 * Math.cos((Number(lat) * Math.PI) / 180);
 }
@@ -184,27 +158,18 @@ function distanceToPolygonMeters(point, polygon = []) {
 }
 
 /**
- * Main entry - uses polygon if defined, falls back to circle
+ * Main entry - polygon-only geofence check.
  * @param {{lat: number, lng: number}} employeeGPS
- * @param {{geo_fence_polygons?: Array<{lat: number, lng: number}>, geofence_center?: {lat: number, lng: number}, geofence_radius_meters?: number}} branch
+ * @param {{geo_fence_polygons?: Array<{lat: number, lng: number}>}} branch
  * @returns {boolean}
  */
 function checkGeofence(employeeGPS, branch) {
   const polygon = normalizePolygon(branch.geo_fence_polygons);
-  if (polygon.length >= 3) {
-    return isInsidePolygon(employeeGPS, polygon);
-  }
-
-  if (branch.geofence_center) {
-    return isWithinRadius(employeeGPS, branch.geofence_center, branch.geofence_radius_meters || 200);
-  }
-
-  return false;
+  return polygon.length >= 3 ? isInsidePolygon(employeeGPS, polygon) : false;
 }
 
 module.exports = {
   isInsidePolygon,
-  isWithinRadius,
   distanceToPolygonMeters,
   checkGeofence,
 };

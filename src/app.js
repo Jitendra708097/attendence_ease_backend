@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
 const env = require('./config/env');
 const authRoutes = require('./modules/auth/auth.routes');
 const attendanceRoutes = require('./modules/attendance/attendance.routes');
@@ -50,6 +51,7 @@ app.use(
  );
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+app.use(cookieParser());
 app.use(
   morgan(':method :url :status :response-time ms - :res[content-length] req_id=:request-id', {
     stream: {

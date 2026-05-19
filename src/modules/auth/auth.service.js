@@ -154,6 +154,13 @@ async function login({ email, password, deviceId }) {
     throw error;
   }
 
+  if (employee.role === 'superadmin') {
+    const error = new Error('Use the superadmin portal to sign in');
+    error.code = 'AUTH_007';
+    error.statusCode = 403;
+    throw error;
+  }
+
   if (employee.role !== 'superadmin' && (!employee.organisation?.is_active || employee.organisation?.cancelled_at)) {
     const error = new Error('Organisation account is suspended or inactive');
     error.code = 'AUTH_007';

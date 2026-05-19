@@ -1,5 +1,12 @@
 const { ok, fail } = require('../../utils/response');
 const { log } = require('../../utils/auditLog');
+const {
+  clearAuthCookies,
+  getAccessTokenFromRequest,
+  getRefreshTokenFromRequest,
+  setAuthCookies,
+} = require('../../utils/authCookies');
+const { blacklistToken } = require('../../utils/jwtBlacklist');
 const authService = require('./auth.service');
 const {
   validateLoginPayload,
@@ -18,6 +25,7 @@ async function login(req, res) {
 
   try {
     const data = await authService.login(req.body);
+    setAuthCookies(res, data);
     return ok(res, data, 'Login successful');
   } catch (error) {
     try {
@@ -37,14 +45,16 @@ async function login(req, res) {
 }
 
 async function refresh(req, res) {
-  const details = validateRefreshPayload(req.body);
+  const refreshToken = getRefreshTokenFromRequest(req);
+  const details = validateRefreshPayload({ refreshToken });
 
   if (details.length > 0) {
     return fail(res, 'AUTH_006', 'Invalid refresh payload', details, 422);
   }
 
   try {
-    const data = await authService.refresh(req.body.refreshToken);
+    const data = await authService.refresh(refreshToken);
+    setAuthCookies(res, data);
     return ok(res, data, 'Token refreshed');
   } catch (error) {
     return fail(res, error.code || 'AUTH_002', error.message, [], error.statusCode || 401);
@@ -54,9 +64,11 @@ async function refresh(req, res) {
 async function logout(req, res) {
   try {
     await authService.logout({
-      refreshToken: req.body.refreshToken,
+      refreshToken: getRefreshTokenFromRequest(req),
       employeeId: req.employee.id,
     });
+    await blacklistToken(getAccessTokenFromRequest(req));
+    clearAuthCookies(res);
     await log(req.employee, 'auth.logout', { type: 'auth', id: req.employee.id }, null, null, req);
     return ok(res, { success: true }, 'Logout successful');
   } catch (error) {

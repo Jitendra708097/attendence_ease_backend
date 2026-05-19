@@ -29,6 +29,34 @@ redisClient.on('error', (error) => {
   console.error('[redis] connection error:', error.message);
 });
 
+function createRedisConnection(overrides = {}) {
+  const { omitMaxRetriesPerRequest = false, ...redisOverrides } = overrides;
+
+  if (redisOptions.url) {
+    const options = {
+      lazyConnect: redisOptions.lazyConnect,
+      ...redisOverrides,
+    };
+
+    if (!omitMaxRetriesPerRequest) {
+      options.maxRetriesPerRequest = redisOptions.maxRetriesPerRequest;
+    }
+
+    return new Redis(redisOptions.url, options);
+  }
+
+  const options = {
+    ...redisOptions,
+    ...redisOverrides,
+  };
+
+  if (omitMaxRetriesPerRequest) {
+    delete options.maxRetriesPerRequest;
+  }
+
+  return new Redis(options);
+}
+
 async function connectRedis() {
   if (redisClient.status === 'ready' || redisClient.status === 'connect') {
     return redisClient;
@@ -42,5 +70,6 @@ module.exports = {
   Redis,
   redisClient,
   redisOptions,
+  createRedisConnection,
   connectRedis,
 };

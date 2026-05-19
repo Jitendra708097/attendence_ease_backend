@@ -82,6 +82,10 @@ const env = {
     accessExpiry: readEnv('JWT_ACCESS_EXPIRY', '15m'),
     refreshExpiry: readEnv('JWT_REFRESH_EXPIRY', '30d'),
   },
+  cookies: {
+    secure: parseBoolean(readEnv('COOKIE_SECURE'), readEnv('NODE_ENV', 'development') === 'production'),
+    sameSite: readEnv('COOKIE_SAME_SITE', readEnv('NODE_ENV', 'development') === 'production' ? 'none' : 'lax'),
+  },
   aws: {
     region: readEnv('AWS_REGION', ''),
     accessKeyId: readEnv('AWS_ACCESS_KEY_ID', ''),

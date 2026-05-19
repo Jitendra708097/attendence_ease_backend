@@ -7,8 +7,7 @@ async function orgGuard(req, res, next) {
   }
 
   if (req.employee.role === 'superadmin') {
-    req.org_id = req.params.orgId || req.body.orgId || null;
-    return next();
+    return fail(res, 'AUTH_003', 'Use an impersonation session for organisation-scoped access', [], 403);
   }
 
   req.org_id = req.employee.orgId;

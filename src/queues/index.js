@@ -1,17 +1,47 @@
 const Bull = require('bull');
-const { redisOptions } = require('../config/redis');
+const { createRedisConnection } = require('../config/redis');
 
-function buildQueueRedisOptions() {
-  if (typeof redisOptions === 'string') {
-    return redisOptions;
+let sharedQueueClient = null;
+let sharedQueueSubscriber = null;
+
+function getSharedQueueClient() {
+  if (!sharedQueueClient) {
+    sharedQueueClient = createRedisConnection({
+      connectionName: 'attendease:bull:client',
+    });
+    sharedQueueClient.setMaxListeners(30);
   }
 
-  return {
-    host: redisOptions.host,
-    port: redisOptions.port,
-    username: redisOptions.username,
-    password: redisOptions.password,
-  };
+  return sharedQueueClient;
+}
+
+function getSharedQueueSubscriber() {
+  if (!sharedQueueSubscriber) {
+    sharedQueueSubscriber = createRedisConnection({
+      connectionName: 'attendease:bull:subscriber',
+      enableReadyCheck: false,
+      maxRetriesPerRequest: null,
+    });
+    sharedQueueSubscriber.setMaxListeners(30);
+  }
+
+  return sharedQueueSubscriber;
+}
+
+function createQueueClient(type) {
+  if (type === 'client') {
+    return getSharedQueueClient();
+  }
+
+  if (type === 'subscriber') {
+    return getSharedQueueSubscriber();
+  }
+
+  return createRedisConnection({
+    connectionName: `attendease:bull:${type}`,
+    enableReadyCheck: false,
+    maxRetriesPerRequest: null,
+  });
 }
 
 const defaultJobOptions = {
@@ -25,7 +55,7 @@ const defaultJobOptions = {
 
 function createQueue(name) {
   return new Bull(name, {
-    redis: buildQueueRedisOptions(),
+    createClient: createQueueClient,
     defaultJobOptions,
   });
 }
@@ -41,6 +71,13 @@ const queues = {
 
 async function closeQueues() {
   await Promise.allSettled(Object.values(queues).map((queue) => queue.close()));
+  await Promise.allSettled(
+    [sharedQueueClient, sharedQueueSubscriber]
+      .filter(Boolean)
+      .map((client) => client.quit())
+  );
+  sharedQueueClient = null;
+  sharedQueueSubscriber = null;
 }
 
 module.exports = {
