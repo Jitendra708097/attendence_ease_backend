@@ -23,8 +23,12 @@ function registerFaceEnrollmentWorker() {
     return faceEnrollment;
   }
 
-  faceEnrollment.process('face_enrollment', async (job) => {
+  faceEnrollment.process('face_enrollment', 2, async (job) => {
     return faceService.processEnrollmentJob(job.data);
+  });
+
+  faceEnrollment.resume(true).catch((error) => {
+    console.error('[queue:face-enrollment] Resume failed:', error.message);
   });
 
   faceEnrollment.on('completed', async (job) => {
@@ -61,6 +65,12 @@ function registerFaceEnrollmentWorker() {
 
     console.error('[queue:face-enrollment] Job failed:', error.message);
   });
+
+  faceEnrollment.on('error', (error) => {
+    console.error('[queue:face-enrollment] Redis/queue error:', error.message);
+  });
+
+  console.log('[queue:face-enrollment] Worker registered');
 
   workerRegistered = true;
   return faceEnrollment;

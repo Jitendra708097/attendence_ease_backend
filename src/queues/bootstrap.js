@@ -17,6 +17,8 @@ function registerQueues() {
   registerOfflineSyncWorker();
   registerDailyScheduler();
 
+  console.log('[queues] Workers registered');
+
   return queues;
 }
 
