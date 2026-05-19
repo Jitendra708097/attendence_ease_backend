@@ -508,6 +508,15 @@ async function processSendWelcomeEmailJob(jobData) {
   });
 }
 
+async function processSendWelcomeSmsJob(jobData = {}) {
+  return {
+    sent: false,
+    skipped: true,
+    reason: 'sms_not_configured',
+    phone: jobData.phone || null,
+  };
+}
+
 async function processSendBillingAlertEmailJob(jobData) {
   const {
     email,
@@ -948,6 +957,7 @@ module.exports = {
   processShiftReminderJob,
   processCheckoutReminderJob,
   processSendWelcomeEmailJob,
+  processSendWelcomeSmsJob,
   processSendBillingAlertEmailJob,
   listNotifications,
   markAsRead,

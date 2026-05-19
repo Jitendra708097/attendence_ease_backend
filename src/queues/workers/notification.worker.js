@@ -19,6 +19,10 @@ async function processWelcomeEmail(job) {
   return notificationService.processSendWelcomeEmailJob(job.data);
 }
 
+async function processWelcomeSms(job) {
+  return notificationService.processSendWelcomeSmsJob(job.data);
+}
+
 async function processBillingAlertEmail(job) {
   return notificationService.processSendBillingAlertEmailJob(job.data);
 }
@@ -32,6 +36,7 @@ function registerNotificationWorker() {
   notification.process('shift_reminder', 5, processShiftReminder);
   notification.process('checkout_reminder', 5, processCheckoutReminder);
   notification.process('send_welcome_email', 3, processWelcomeEmail);
+  notification.process('send_welcome_sms', 3, processWelcomeSms);
   notification.process('send_billing_alert_email', 3, processBillingAlertEmail);
 
   notification.resume(true).catch((error) => {
