@@ -29,7 +29,11 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl,env.frontend.mobileUrl].filter(Boolean);
+const allowedOrigins = [env.frontend.adminUrl, env.frontend.superadminUrl, env.frontend.mobileUrl]
+  .filter(Boolean)
+  .flatMap((value) => String(value).split(','))
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 morgan.token('request-id', (req) => req.id || '-');
 

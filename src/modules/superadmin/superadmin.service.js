@@ -1414,6 +1414,9 @@ async function resendOrgAdminInvite({ orgId }) {
     adminEmail: admin.email,
     orgId: org.id,
     orgName: org.name,
+    deliveryNote: queued
+      ? 'Invite email has been queued. Ask the admin to check Inbox, Spam, and Promotions.'
+      : `Invite email was not queued${errorMessage ? `: ${errorMessage}` : '.'}`,
   };
 }
 

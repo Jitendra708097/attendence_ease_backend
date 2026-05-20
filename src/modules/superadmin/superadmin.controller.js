@@ -159,7 +159,9 @@ async function resendOrgInvite(req, res) {
       orgId: req.params.orgId,
     });
     await log(req.employee, 'ORG_INVITE_RESENT', { type: 'organisation', id: req.params.orgId }, null, data, req);
-    return ok(res, data, 'Organisation admin invite queued');
+    return ok(res, data, data.queued
+      ? 'Organisation admin invite email queued for delivery'
+      : 'Organisation admin invite could not be queued');
   } catch (error) {
     return fail(res, error.code || 'SA_042', error.message, error.details || [], error.statusCode || 400);
   }

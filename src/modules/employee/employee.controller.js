@@ -39,6 +39,22 @@ async function createEmployee(req, res) {
   }
 }
 
+async function resendInvite(req, res) {
+  try {
+    const organisation = await Organisation.findOne({
+      where: { id: req.org_id },
+      attributes: ['id', 'name'],
+    });
+    const data = await employeeService.resendInvite(req.org_id, organisation, req.params.id);
+    await log(req.employee, 'employee.invite_resend', { type: 'employee', id: req.params.id }, null, data, req);
+    return ok(res, data, data.queued
+      ? 'Employee invite email queued for delivery'
+      : 'Employee invite email could not be queued');
+  } catch (error) {
+    return fail(res, error.code || 'EMP_014', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function updateEmployee(req, res) {
   const details = validateEmployeePayload(req.body, true);
 
@@ -211,6 +227,7 @@ module.exports = {
   listEmployees,
   getEmployee,
   createEmployee,
+  resendInvite,
   updateEmployee,
   deleteEmployee,
   deleteEmployees,

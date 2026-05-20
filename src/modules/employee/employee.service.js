@@ -345,41 +345,126 @@ async function createEmployee(orgId, organisation, payload) {
     leave_balance: payload.leaveBalance || {},
   });
 
-  await notification.add(
+  let welcomeEmailQueued = false;
+  let welcomeEmailJobId = null;
+  let welcomeEmailError = null;
+
+  try {
+    const welcomeJob = await notification.add(
+      'send_welcome_email',
+      {
+        orgId,
+        employeeId: employee.id,
+        email: employee.email,
+        phone: employee.phone,
+        organisationName: organisation.name,
+        employeeName: employee.name,
+        tempPassword,
+      },
+      {
+        jobId: `send_welcome_email_${employee.id}`,
+        removeOnComplete: true,
+      }
+    );
+    welcomeEmailQueued = true;
+    welcomeEmailJobId = welcomeJob.id;
+  } catch (error) {
+    welcomeEmailError = error.message;
+  }
+
+  try {
+    await notification.add(
+      'send_push',
+      {
+        orgId,
+        empIds: [employee.id],
+        type: 'new_employee_onboarded',
+        title: 'Welcome to AttendEase',
+        body: `${organisation.name} added you as an employee. Complete your profile and face enrollment to start marking attendance.`,
+        actionUrl: 'attendease://profile',
+        data: { employee_id: employee.id },
+      },
+      {
+        jobId: `new_employee_onboarded_${employee.id}`,
+        removeOnComplete: true,
+      }
+    );
+  } catch (_) {
+    // Push is best-effort; employee creation and email status should remain visible.
+  }
+
+  const createdEmployee = await getEmployeeById(orgId, employee.id);
+
+  return {
+    ...createdEmployee,
+    welcomeEmailQueued,
+    welcomeEmailJobId,
+    welcomeEmailError,
+    deliveryNote: welcomeEmailQueued
+      ? 'Invite email has been queued. Ask the employee to check Inbox, Spam, and Promotions.'
+      : `Employee was created, but invite email was not queued${welcomeEmailError ? `: ${welcomeEmailError}` : '.'}`,
+  };
+}
+
+async function resendInvite(orgId, organisation, id) {
+  const employee = await Employee.findOne({
+    where: getTenantEmployeeWhere(orgId, { id }),
+    attributes: ['id', 'org_id', 'name', 'email', 'phone', 'is_active', 'temp_password', 'password_changed'],
+  });
+
+  if (!employee) {
+    const error = new Error('Employee not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (!employee.is_active) {
+    const error = new Error('Invite cannot be resent because this employee is inactive.');
+    error.code = 'EMP_014';
+    error.statusCode = 409;
+    throw error;
+  }
+
+  if (!employee.email) {
+    const error = new Error('Invite cannot be sent because this employee has no email address.');
+    error.code = 'EMP_015';
+    error.statusCode = 422;
+    throw error;
+  }
+
+  if (!employee.temp_password || employee.password_changed) {
+    const error = new Error('Invite cannot be resent because this employee has already completed first login. Ask them to use Forgot Password.');
+    error.code = 'EMP_016';
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const job = await notification.add(
     'send_welcome_email',
     {
       orgId,
       employeeId: employee.id,
       email: employee.email,
       phone: employee.phone,
-      organisationName: organisation.name,
+      organisationName: organisation?.name || 'AttendEase',
       employeeName: employee.name,
-      tempPassword,
+      tempPassword: employee.temp_password,
     },
     {
-      jobId: `send_welcome_email_${employee.id}`,
+      jobId: `resend_welcome_email_${employee.id}_${Date.now()}`,
       removeOnComplete: true,
     }
   );
 
-  await notification.add(
-    'send_push',
-    {
-      orgId,
-      empIds: [employee.id],
-      type: 'new_employee_onboarded',
-      title: 'Welcome to AttendEase',
-      body: `${organisation.name} added you as an employee. Complete your profile and face enrollment to start marking attendance.`,
-      actionUrl: 'attendease://profile',
-      data: { employee_id: employee.id },
-    },
-    {
-      jobId: `new_employee_onboarded_${employee.id}`,
-      removeOnComplete: true,
-    }
-  );
-
-  return getEmployeeById(orgId, employee.id);
+  return {
+    queued: true,
+    jobId: job.id,
+    employeeId: employee.id,
+    employeeName: employee.name,
+    employeeEmail: employee.email,
+    deliveryNote: 'Invite email has been queued. Ask the employee to check Inbox, Spam, and Promotions.',
+  };
 }
 
 async function updateEmployee(orgId, id, payload) {
@@ -553,6 +638,7 @@ module.exports = {
   getOwnNotificationPreferences,
   updateOwnNotificationPreferences,
   createEmployee,
+  resendInvite,
   updateEmployee,
   deleteEmployee,
   deleteEmployees,

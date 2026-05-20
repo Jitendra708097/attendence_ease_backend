@@ -28,6 +28,7 @@ router.post('/bulk-upload', adminGuard, blockImpersonatedWrites, upload.single('
 router.get('/:id/attendance-summary', adminGuard, asyncHandler(employeeController.attendanceSummary));
 router.get('/:id', adminGuard, asyncHandler(employeeController.getEmployee));
 router.post('/', adminGuard, blockImpersonatedWrites, asyncHandler(employeeController.createEmployee));
+router.post('/:id/invite/resend', adminGuard, blockImpersonatedWrites, asyncHandler(employeeController.resendInvite));
 router.put('/:id', adminGuard, blockImpersonatedWrites, asyncHandler(employeeController.updateEmployee));
 router.delete('/:id', adminGuard, blockImpersonatedWrites, asyncHandler(employeeController.deleteEmployee));
 
