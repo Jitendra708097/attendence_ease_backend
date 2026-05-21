@@ -194,7 +194,7 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
         }
       }
 
-      throw createError('FACE_003', 'Face verification failed', 401, [
+      throw createError('FACE_MATCH_FAILED', 'Face verification failed', 401, [
         {
           field: 'faceEmbedding',
           message: 'Submitted face did not meet verification threshold',
@@ -216,7 +216,7 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
     };
   }
 
-  throw createError('FACE_003', 'Face verification failed', 401, [
+  throw createError('FACE_MATCH_FAILED', 'Face verification failed', 401, [
     {
       field: 'selfieBase64',
       message: 'Submitted face did not match enrolled employee face',

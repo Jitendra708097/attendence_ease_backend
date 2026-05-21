@@ -10,6 +10,7 @@ const queues = require('../../queues');
 const { queueWelcomeEmail, queueBillingAlertEmail } = require('../notification/notification.service');
 const { PLAN_PRICES } = require('../../utils/constants');
 const { getRequestMetricsSnapshot } = require('../../utils/requestMetrics');
+const { getRekognitionHealth } = require('../face/face.cloudService');
 
 const ALLOWED_PLANS = ['trial', 'standard'];
 const BILLING_ALERT_TYPES = [
@@ -549,10 +550,11 @@ async function getRedisHealthStatus() {
 
 async function buildHealthSnapshot({ requestSeries = [] } = {}) {
   const requestMetrics = getRequestMetricsSnapshot();
-  const [databaseHealth, redisHealth, queueSnapshot] = await Promise.all([
+  const [databaseHealth, redisHealth, queueSnapshot, rekognitionHealth] = await Promise.all([
     getDatabaseHealthStatus(),
     getRedisHealthStatus(),
     getQueueSnapshot({ includeFailedJobs: true }),
+    getRekognitionHealth(),
   ]);
 
   const currentTimeLabel = new Date().toISOString().slice(11, 16);
@@ -569,11 +571,13 @@ async function buildHealthSnapshot({ requestSeries = [] } = {}) {
     failedQueueCount > 0 && 'Some background jobs failed and may need retry or investigation',
     apiStatus !== 'healthy' && 'API users may experience slower responses or elevated errors',
     databaseHealth.status !== 'healthy' && 'Core application reads/writes may fail or become slow',
+    rekognitionHealth.status !== 'healthy' && 'AWS Rekognition face search may be unavailable or degraded',
   ].filter(Boolean);
 
   return {
     database: databaseHealth.status,
     redis: redisHealth.status,
+    rekognition: rekognitionHealth.status,
     api: apiStatus,
     availabilityPercent: 100,
     processUptimeSeconds: Math.floor(process.uptime()),
@@ -604,11 +608,25 @@ async function buildHealthSnapshot({ requestSeries = [] } = {}) {
         checkedAt: new Date().toISOString(),
         reason: apiStatus === 'healthy' ? null : `API p95 ${requestMetrics.p95}ms, error rate ${requestMetrics.errorRate}%`,
       },
+      rekognition: {
+        name: 'AWS Rekognition',
+        status: rekognitionHealth.status,
+        latency: rekognitionHealth.latency,
+        checkedAt: rekognitionHealth.checkedAt || new Date().toISOString(),
+        reason: rekognitionHealth.status === 'healthy' ? null : rekognitionHealth.reason,
+        detail: {
+          configured: rekognitionHealth.configured,
+          collectionId: rekognitionHealth.collectionId,
+          faceCount: rekognitionHealth.faceCount,
+          faceModelVersion: rekognitionHealth.faceModelVersion,
+        },
+      },
     },
     reasons: {
       database: databaseHealth.status === 'healthy' ? null : 'Database health check failed or latency is unavailable',
       redis: redisHealth.status === 'healthy' ? null : (redisHealth.error || `Redis status is ${redisClient.status || 'unknown'}`),
       api: apiStatus === 'healthy' ? null : `API p95 ${requestMetrics.p95}ms, error rate ${requestMetrics.errorRate}%`,
+      rekognition: rekognitionHealth.status === 'healthy' ? null : rekognitionHealth.reason,
     },
     apiMetrics: {
       p50: requestMetrics.p50,

@@ -3,6 +3,7 @@ const { connectDatabase } = require('./config/database');
 const { connectRedis, redisClient } = require('./config/redis');
 const app = require('./app');
 const { registerQueues, closeQueues } = require('./queues/bootstrap');
+const { getRekognitionHealth } = require('./modules/face/face.cloudService');
 
 let server;
 let shuttingDown = false;
@@ -34,6 +35,16 @@ async function startServer() {
 
   server = app.listen(env.port,'0.0.0.0', () => {
     console.log(`[bootstrap] Server listening on port ${env.port}`);
+    getRekognitionHealth()
+      .then((health) => {
+        const detail = health.configured
+          ? `collection=${health.collectionId || 'unknown'} faces=${health.faceCount ?? 'unknown'}`
+          : health.reason;
+        console.log(`[bootstrap] Rekognition ${health.status}: ${detail}`);
+      })
+      .catch((error) => {
+        console.warn('[bootstrap] Rekognition health check failed:', error.message);
+      });
   });
 
   server.on('error', (error) => {

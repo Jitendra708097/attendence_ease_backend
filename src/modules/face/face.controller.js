@@ -80,9 +80,9 @@ async function verify(req, res) {
   } catch (error) {
     // ✅ FIX: Return generic error for 404 to prevent info leakage
     if (error.statusCode === 404 || error.code === 'FACE_001') {
-      return fail(res, 'FACE_003', 'Face verification failed', [], 401);
+      return fail(res, 'FACE_MATCH_FAILED', 'Face verification failed', [], 401);
     }
-    return fail(res, error.code || 'FACE_003', error.message, error.details || [], error.statusCode || 400);
+    return fail(res, error.code || 'FACE_MATCH_FAILED', error.message, error.details || [], error.statusCode || 400);
   }
 }
 

@@ -10,7 +10,7 @@ function getWeekdayNumber(dateString) {
   return value === 0 ? 7 : value;
 }
 
-async function getApprovedLeaveEmployeeIds(orgId, dateString) {
+async function getApprovedLeaveByEmployeeId(orgId, dateString) {
   const leaves = await LeaveRequest.findAll({
     where: {
       org_id: orgId,
@@ -22,10 +22,16 @@ async function getApprovedLeaveEmployeeIds(orgId, dateString) {
         [Op.gte]: dateString,
       },
     },
-    attributes: ['emp_id'],
+    attributes: ['emp_id', 'is_half_day', 'half_day_period'],
   });
 
-  return new Set(leaves.map((leave) => leave.emp_id));
+  return leaves.reduce((accumulator, leave) => {
+    accumulator.set(leave.emp_id, {
+      type: leave.is_half_day ? 'half_day' : 'full_day',
+      period: leave.half_day_period || null,
+    });
+    return accumulator;
+  }, new Map());
 }
 
 async function getHolidayBranchIds(orgId, dateString) {
@@ -102,7 +108,7 @@ async function processAutoAbsent(job) {
   });
 
   const existingEmpIds = new Set(existingRows.map((row) => row.emp_id));
-  const leaveEmpIds = await getApprovedLeaveEmployeeIds(orgId, dateString);
+  const leaveByEmpId = await getApprovedLeaveByEmployeeId(orgId, dateString);
   const holidayInfo = await getHolidayBranchIds(orgId, dateString);
 
   const employeesMissingBranch = employees.filter((employee) => !employee.branch_id);
@@ -118,7 +124,8 @@ async function processAutoAbsent(job) {
       return false;
     }
 
-    if (leaveEmpIds.has(employee.id)) {
+    const leave = leaveByEmpId.get(employee.id);
+    if (leave && leave.type === 'full_day') {
       return false;
     }
 
@@ -146,10 +153,10 @@ async function processAutoAbsent(job) {
       branch_id: employee.branch_id,
       shift_id: shiftId,
       date: dateString,
-      status: 'absent',
+      status: leaveByEmpId.get(employee.id)?.type === 'half_day' ? 'half_day' : 'absent',
       session_count: 0,
       total_worked_minutes: 0,
-      source: 'auto',
+      source: leaveByEmpId.get(employee.id)?.type === 'half_day' ? 'leave' : 'auto',
       is_finalised: true,
     })),
     {
@@ -159,6 +166,9 @@ async function processAutoAbsent(job) {
   );
 
   for (const attendance of createdRows) {
+    if (attendance.status === 'half_day') {
+      continue;
+    }
     await notification.add(
       'send_push',
       {

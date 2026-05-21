@@ -1,4 +1,4 @@
-const { DeleteFacesCommand, IndexFacesCommand, SearchFacesByImageCommand } = require('@aws-sdk/client-rekognition');
+const { DeleteFacesCommand, DescribeCollectionCommand, IndexFacesCommand, SearchFacesByImageCommand } = require('@aws-sdk/client-rekognition');
 const env = require('../../config/env');
 const rekognitionClient = require('../../config/rekognition');
 
@@ -93,6 +93,40 @@ async function searchFacesByImage(selfieBuffer, options = {}) {
   }
 }
 
+async function getRekognitionHealth() {
+  if (!canUseRekognition()) {
+    return {
+      status: 'degraded',
+      configured: false,
+      reason: 'AWS Rekognition environment variables are not fully configured',
+    };
+  }
+
+  const startedAt = Date.now();
+  try {
+    const response = await rekognitionClient.send(new DescribeCollectionCommand({
+      CollectionId: env.aws.rekognitionCollectionId,
+    }));
+
+    return {
+      status: 'healthy',
+      configured: true,
+      latency: Date.now() - startedAt,
+      collectionId: env.aws.rekognitionCollectionId,
+      faceCount: response.FaceCount || 0,
+      modelVersion: response.FaceModelVersion || null,
+    };
+  } catch (error) {
+    return {
+      status: 'degraded',
+      configured: true,
+      latency: null,
+      collectionId: env.aws.rekognitionCollectionId,
+      reason: error.message,
+    };
+  }
+}
+
 /**
  * @param {string} employeeId
  * @param {Buffer} selfieBuffer
@@ -148,6 +182,7 @@ async function deleteFromRekognition(faceId) {
 
 module.exports = {
   canUseRekognition,
+  getRekognitionHealth,
   verifyWithRekognition,
   searchFacesByImage,
   enrollWithRekognition,

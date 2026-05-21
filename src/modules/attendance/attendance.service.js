@@ -14,9 +14,9 @@ const { compareEmbeddings, isValidEmbedding, normalizeEmbedding } = require('../
 const { generateFaceEmbedding } = require('../face/face.tensorflowService');
 const { searchFacesByImage } = require('../face/face.cloudService');
 
-const KIOSK_LOCAL_THRESHOLD = 0.88;
-const KIOSK_AMBIGUOUS_MARGIN = 0.02;
-const KIOSK_REKOGNITION_THRESHOLD = 95;
+const KIOSK_LOCAL_THRESHOLD = 0.92;
+const KIOSK_AMBIGUOUS_MARGIN = 0.04;
+const KIOSK_REKOGNITION_THRESHOLD = 97;
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -85,8 +85,41 @@ function getUndoKey(orgId, empId, sessionId) {
   return `attendance_undo:${orgId}:${empId}:${sessionId}`;
 }
 
+async function getUndoWindowEndsAt(orgId, empId, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const undoKey = getUndoKey(orgId, empId, sessionId);
+  const ttlSeconds = await redisClient.ttl(undoKey);
+  if (ttlSeconds <= 0) {
+    return null;
+  }
+
+  return new Date(Date.now() + ttlSeconds * 1000).toISOString();
+}
+
 function getLiveFeedKey(orgId) {
   return `attendance_live_feed:${orgId}`;
+}
+
+function getAttendanceSubmitKey(orgId, empId, action, clientRequestId) {
+  const requestPart = clientRequestId || 'recent';
+  return `attendance_submit:${orgId}:${empId}:${action}:${requestPart}`;
+}
+
+async function guardRecentSubmit({ orgId, empId, action, clientRequestId, ttlSeconds = 30 }) {
+  const keys = [...new Set([
+    getAttendanceSubmitKey(orgId, empId, action, clientRequestId),
+    getAttendanceSubmitKey(orgId, empId, action, null),
+  ])];
+
+  for (const key of keys) {
+    const created = await redisClient.set(key, '1', 'EX', ttlSeconds, 'NX');
+    if (!created) {
+      throw createError('ATT_DUPLICATE', 'Attendance request is already being processed. Please wait a moment.', 409);
+    }
+  }
 }
 
 async function pushLiveFeedEvent(orgId, payload) {
@@ -346,23 +379,49 @@ function getIncompleteExpiryDate(attendanceDate, shift) {
   return localDateTimeToUtc(shiftEndDate, shift.end_time, 'UTC');
 }
 
-async function scheduleIncompleteExpiry({ orgId, empId, attendanceId, sessionId, attendanceDate, shift, timezone }) {
-  const shiftEnd = getIncompleteExpiryDate(attendanceDate, shift && { ...shift, end_time: shift.end_time });
-  const localShiftEnd = shiftEnd
-    ? localDateTimeToUtc(
-        shift.crosses_midnight ? addDays(attendanceDate, 1) : attendanceDate,
-        shift.end_time,
-        timezone
-      )
-    : null;
+function getCheckoutGraceDeadline(attendanceDate, shift, timezone) {
+  if (!attendanceDate || !shift?.end_time) {
+    return null;
+  }
 
-  if (!localShiftEnd) {
+  const shiftEnd = localDateTimeToUtc(
+    shift.crosses_midnight ? addDays(attendanceDate, 1) : attendanceDate,
+    shift.end_time,
+    timezone
+  );
+
+  if (!shiftEnd) {
     return null;
   }
 
   const graceMinutes = Number(shift.grace_minutes_checkout || 60);
-  const delayUntil = localShiftEnd.getTime() + graceMinutes * 60 * 1000;
-  const delay = Math.max(delayUntil - Date.now(), 0);
+  return new Date(shiftEnd.getTime() + graceMinutes * 60 * 1000);
+}
+
+function assertCheckoutWindowStillOpen(attendanceDate, shift, timezone) {
+  const checkoutDeadline = getCheckoutGraceDeadline(attendanceDate, shift, timezone);
+  if (checkoutDeadline && Date.now() >= checkoutDeadline.getTime()) {
+    throw createError(
+      'ATT_014',
+      'Check-in window has expired for this shift. Please request regularisation.',
+      400
+    );
+  }
+}
+
+async function scheduleIncompleteExpiry({ orgId, empId, attendanceId, sessionId, attendanceDate, shift, timezone }) {
+  const localShiftEnd = localDateTimeToUtc(
+    shift.crosses_midnight ? addDays(attendanceDate, 1) : attendanceDate,
+    shift.end_time,
+    timezone
+  );
+  const checkoutDeadline = getCheckoutGraceDeadline(attendanceDate, shift, timezone);
+
+  if (!localShiftEnd || !checkoutDeadline) {
+    return null;
+  }
+
+  const delay = Math.max(checkoutDeadline.getTime() - Date.now(), 0);
   const jobId = `attendance_incomplete_expiry_${sessionId}`;
 
   await checkoutGrace.add(
@@ -638,6 +697,10 @@ async function validateLocationForBranch(branch, body) {
     return;
   }
 
+  if (!Array.isArray(branch.geo_fence_polygons) || branch.geo_fence_polygons.length < 3) {
+    throw createError('GEO_001', 'No valid geofence is configured for this branch', 400);
+  }
+
   const employeeLocation = { lat: Number(body.lat), lng: Number(body.lng) };
   const isInside = checkGeofence(employeeLocation, branch);
   if (!isInside) {
@@ -850,8 +913,152 @@ async function getLeaveApprovalForDate(orgId, empId, date) {
 
   return {
     type: leave.is_half_day ? 'half_day' : 'full_day',
+    period: leave.half_day_period || null,
     leaveId: leave.id,
   };
+}
+
+function addDateDays(dateString, days) {
+  const value = new Date(`${dateString}T00:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function getDateList(fromDate, toDate) {
+  const dates = [];
+  for (let current = fromDate; current && current <= toDate; current = addDateDays(current, 1)) {
+    dates.push(current);
+  }
+  return dates;
+}
+
+async function recomputeLeaveAttendance({ orgId, empId, fromDate, toDate, transaction = null }) {
+  const employee = await Employee.findOne({
+    where: { id: empId, org_id: orgId, is_active: true },
+    transaction,
+  });
+
+  if (!employee) {
+    return { updated: 0 };
+  }
+
+  const shift = await Shift.findOne({ where: { id: employee.shift_id, org_id: orgId }, transaction });
+  if (!shift) {
+    return { updated: 0 };
+  }
+
+  const timezone = await getOrgTimezone(orgId);
+  const today = getTodayDateString(timezone);
+  let updated = 0;
+
+  for (const date of getDateList(fromDate, toDate)) {
+    const leaveApproval = await getLeaveApprovalForDate(orgId, empId, date);
+    let attendance = await Attendance.findOne({
+      where: { org_id: orgId, emp_id: empId, date },
+      transaction,
+    });
+
+    if (!attendance && leaveApproval) {
+      attendance = await Attendance.create(
+        {
+          org_id: orgId,
+          emp_id: empId,
+          branch_id: employee.branch_id,
+          shift_id: employee.shift_id,
+          date,
+          status: leaveApproval.type === 'full_day' ? 'on_leave' : 'half_day',
+          source: 'leave',
+          is_finalised: date <= today,
+        },
+        { transaction }
+      );
+      updated += 1;
+      continue;
+    }
+
+    if (!attendance || attendance.is_manual) {
+      continue;
+    }
+
+    const sessions = await getAttendanceSessions(attendance.id);
+    const totalWorkedMinutes = sessions.reduce((sum, item) => sum + Number(item.worked_minutes || 0), 0);
+
+    if (leaveApproval) {
+      const computed = computeAttendanceStatus(
+        {
+          date,
+          first_check_in: attendance.first_check_in,
+          last_check_out: attendance.last_check_out,
+          total_worked_minutes: totalWorkedMinutes,
+        },
+        shift,
+        leaveApproval,
+        timezone
+      );
+
+      await attendance.update(
+        {
+          status: computed.status,
+          total_worked_minutes: totalWorkedMinutes,
+          is_late: computed.isLate,
+          late_by_minutes: computed.lateByMinutes || 0,
+          is_overtime: computed.isOvertime,
+          overtime_minutes: computed.overtimeMinutes || 0,
+          is_early_checkout: computed.isEarlyCheckout || false,
+          early_by_minutes: computed.earlyByMinutes || 0,
+          check_out_type: computed.checkOutType || attendance.check_out_type,
+          source: attendance.source === 'auto' ? 'leave' : attendance.source,
+          is_finalised: date <= today || attendance.is_finalised,
+        },
+        { transaction }
+      );
+      updated += 1;
+      continue;
+    }
+
+    if (attendance.source === 'leave' || ['on_leave', 'half_day'].includes(attendance.status)) {
+      if (attendance.session_count > 0 || totalWorkedMinutes > 0) {
+        const computed = computeAttendanceStatus(
+          {
+            date,
+            first_check_in: attendance.first_check_in,
+            last_check_out: attendance.last_check_out,
+            total_worked_minutes: totalWorkedMinutes,
+          },
+          shift,
+          null,
+          timezone
+        );
+        await attendance.update(
+          {
+            status: computed.status,
+            total_worked_minutes: totalWorkedMinutes,
+            is_late: computed.isLate,
+            late_by_minutes: computed.lateByMinutes || 0,
+            is_overtime: computed.isOvertime,
+            overtime_minutes: computed.overtimeMinutes || 0,
+            is_early_checkout: computed.isEarlyCheckout || false,
+            early_by_minutes: computed.earlyByMinutes || 0,
+            check_out_type: computed.checkOutType || attendance.check_out_type,
+            source: 'self',
+          },
+          { transaction }
+        );
+      } else {
+        await attendance.update(
+          {
+            status: date <= today ? 'absent' : 'not_marked',
+            source: 'auto',
+            is_finalised: date <= today,
+          },
+          { transaction }
+        );
+      }
+      updated += 1;
+    }
+  }
+
+  return { updated };
 }
 
 async function getTodayState(orgId, empId) {
@@ -878,14 +1085,16 @@ async function getTodayState(orgId, empId) {
   const openSession = await getOpenSession(attendance.id);
   const sessions = await getAttendanceSessions(attendance.id);
   const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
-  const undoKey = lastSession ? getUndoKey(orgId, empId, lastSession.id) : null;
-  const undoAvailable = undoKey ? await redisClient.get(undoKey) : null;
+  const undoWindowEndsAt = lastSession
+    ? await getUndoWindowEndsAt(orgId, empId, lastSession.id)
+    : null;
 
   return {
     openSession: openSession ? { id: openSession.id, checkInTime: openSession.check_in_time, status: openSession.status } : null,
     cooldownEndsAt: cooldownEndsAt || null,
     lastCheckout: lastSession && lastSession.check_out_time ? lastSession.check_out_time : null,
-    lastCheckoutId: undoAvailable && lastSession ? lastSession.id : null,
+    undoWindowEndsAt,
+    lastCheckoutId: undoWindowEndsAt && lastSession ? lastSession.id : null,
     todayStatus: attendance.status,
     totalWorkedMins: attendance.total_worked_minutes || 0,
     sessionsToday: attendance.session_count || 0,
@@ -909,8 +1118,16 @@ async function checkIn({ orgId, empId, body, req }) {
     captureTimestamp: body.captureTimestamp,
     consume: false,
   });
+  await guardRecentSubmit({
+    orgId,
+    empId,
+    action: 'check_in',
+    clientRequestId: body.clientRequestId || body.client_record_id,
+  });
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
+  const attendanceDate = getTodayDateString(timezone);
+  assertCheckoutWindowStillOpen(attendanceDate, shift, timezone);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
   await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
@@ -948,7 +1165,7 @@ async function checkIn({ orgId, empId, body, req }) {
     where: {
       org_id: orgId,
       emp_id: empId,
-      date: getTodayDateString(timezone),
+      date: attendanceDate,
     },
     defaults: {
       branch_id: employee.branch_id,
@@ -1031,6 +1248,12 @@ async function checkOut({ orgId, empId, body, req }) {
     challengeToken: body.challengeToken,
     captureTimestamp: body.captureTimestamp,
     consume: false,
+  });
+  await guardRecentSubmit({
+    orgId,
+    empId,
+    action: 'check_out',
+    clientRequestId: body.clientRequestId || body.client_record_id,
   });
 
   const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
@@ -1193,13 +1416,15 @@ async function checkOut({ orgId, empId, body, req }) {
 async function kioskCheckIn({ orgId, employee, shift, body, req, faceMatch }) {
   const timezone = await getOrgTimezone(orgId);
   const empId = employee.id;
+  const attendanceDate = getTodayDateString(timezone);
+  assertCheckoutWindowStillOpen(attendanceDate, shift, timezone);
   await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
 
   const [attendance, created] = await Attendance.findOrCreate({
     where: {
       org_id: orgId,
       emp_id: empId,
-      date: getTodayDateString(timezone),
+      date: attendanceDate,
     },
     defaults: {
       branch_id: employee.branch_id,
@@ -1281,8 +1506,17 @@ async function kioskCheckIn({ orgId, employee, shift, body, req, faceMatch }) {
     {
       attendanceId: attendance.id,
       matchedEmpId: empId,
+      matchedBranchId: employee.branch_id,
       kioskHostEmpId: req.employee.id,
+      kioskHostBranchId: req.employee.branch_id,
       deviceId: body.deviceId || null,
+      gps: {
+        lat: Number(body.lat),
+        lng: Number(body.lng),
+        accuracy: body.accuracy == null ? null : Number(body.accuracy),
+      },
+      faceMatchSource: faceMatch.source,
+      faceMatchScore: faceMatch.score,
       faceMatch,
     },
     req
@@ -1412,9 +1646,18 @@ async function kioskCheckOut({ orgId, employee, shift, body, req, faceMatch, sel
     null,
     {
       matchedEmpId: empId,
+      matchedBranchId: employee.branch_id,
       kioskHostEmpId: req.employee.id,
+      kioskHostBranchId: req.employee.branch_id,
       deviceId: body.deviceId || null,
+      gps: {
+        lat: Number(body.lat),
+        lng: Number(body.lng),
+        accuracy: body.accuracy == null ? null : Number(body.accuracy),
+      },
       workedMinutes,
+      faceMatchSource: faceMatch.source,
+      faceMatchScore: faceMatch.score,
       faceMatch,
     },
     req
@@ -1461,6 +1704,22 @@ async function kioskScan({ orgId, hostEmpId, body, req }) {
   });
 
   const matchedContext = await getEmployeeContext(orgId, matchedEmployee.id);
+  if (String(matchedContext.employee.branch_id) !== String(hostContext.employee.branch_id)) {
+    throw createError(
+      'KIOSK_BRANCH_MISMATCH',
+      'Employee belongs to another branch. Please use that branch kiosk.',
+      403
+    );
+  }
+
+  await guardRecentSubmit({
+    orgId,
+    empId: matchedContext.employee.id,
+    action: 'kiosk_scan',
+    clientRequestId: body.clientRequestId || body.client_record_id,
+    ttlSeconds: 45,
+  });
+
   const timezone = await getOrgTimezone(orgId);
   const attendance = await getTodayAttendance(orgId, matchedEmployee.id, timezone);
   const openSession = attendance ? await getOpenSession(attendance.id) : null;
@@ -1543,7 +1802,7 @@ async function syncOffline({ orgId, empId, body, req }) {
       if (Array.isArray(record.faceEmbedding) || selfieBuffer) {
         await faceService.verifyFace(empId, orgId, record.faceEmbedding || null, selfieBuffer);
       } else if (Number(record.faceScore || 0) < 0.8) {
-        throw createError('FACE_003', 'Offline face score is below threshold', 401);
+        throw createError('FACE_MATCH_FAILED', 'Offline face score is below threshold', 401);
       }
 
       const date = getDateStringInTimezone(capturedAt, timezone);
@@ -2221,7 +2480,10 @@ async function getAttendanceHistory(orgId, empId, query) {
   }));
 
   const attendanceMap = records.reduce((accumulator, record) => {
-    accumulator[record.date] = record.status;
+    accumulator[record.date] = {
+      status: record.status,
+      isLate: record.isLate,
+    };
     return accumulator;
   }, {});
 
@@ -2332,6 +2594,7 @@ module.exports = {
   getAttendanceById,
   manualMark,
   setAnomalyFlag,
+  recomputeLeaveAttendance,
   getTodayStats,
   getTrendStats,
   getTopLateEmployees,

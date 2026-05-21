@@ -1,7 +1,7 @@
 const { randomUUID } = require('crypto');
 const { redisClient } = require('../../config/redis');
 
-const CHALLENGES = ['turn_left', 'turn_right', 'blink'];
+const CHALLENGES = ['blink', 'blink', 'blink', 'blink', 'turn_left', 'turn_right'];
 const CHALLENGE_TTL_SECONDS = 180;
 
 function createError(code, message, statusCode, details = []) {
