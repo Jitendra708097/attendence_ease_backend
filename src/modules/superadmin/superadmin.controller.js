@@ -139,6 +139,15 @@ async function getOrgBilling(req, res) {
   }
 }
 
+async function getOrgPlanHistory(req, res) {
+  try {
+    const data = await superadminService.getOrgPlanHistory(req.params.orgId, req.query);
+    return ok(res, data, 'Organisation plan history fetched');
+  } catch (error) {
+    return fail(res, error.code || 'PLAN_004', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function sendBillingAlert(req, res) {
   try {
     const data = await superadminService.sendBillingAlert({
@@ -623,6 +632,25 @@ async function getFeatureFlagOrgs(req, res) {
   }
 }
 
+async function listPlans(req, res) {
+  try {
+    const data = await superadminService.listPlans();
+    return ok(res, data, 'Plans fetched');
+  } catch (error) {
+    return fail(res, error.code || 'PLAN_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function upsertPlan(req, res) {
+  try {
+    const data = await superadminService.upsertPlan(req.body, req.params.code);
+    await log(req.employee, 'PLAN_DEFINITION_UPDATED', { type: 'plan', id: data.plan.code }, null, data.plan, req);
+    return ok(res, data, 'Plan saved');
+  } catch (error) {
+    return fail(res, error.code || 'PLAN_002', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function queueByName(req, res) {
   try {
     const data = await superadminService.getQueueStatusByName(req.params.name);
@@ -674,6 +702,7 @@ module.exports = {
   getOrgEmployees,
   getOrgAttendance,
   getOrgBilling,
+  getOrgPlanHistory,
   sendBillingAlert,
   resendOrgInvite,
   updateOrgProfile,
@@ -718,6 +747,8 @@ module.exports = {
   setOrgFeatureFlagOverride,
   removeOrgFeatureFlagOverride,
   getFeatureFlagOrgs,
+  listPlans,
+  upsertPlan,
   queueByName,
   databaseStatus,
   retryQueueJob,

@@ -2,6 +2,7 @@ const { Attendance, Branch, Department, Employee } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence.service');
 const { notifyOrgRoles } = require('../notification/notification.service');
+const planService = require('../plan/plan.service');
 
 function createHttpError(message, statusCode, code) {
   const error = new Error(message);
@@ -99,6 +100,8 @@ async function getBranchById(orgId, id) {
 }
 
 async function createBranch(orgId, payload) {
+  await planService.assertBranchLimit(orgId, 1);
+
   const branch = await scopedModel(Branch, orgId).create({
     name: payload.name,
     address: payload.address || null,

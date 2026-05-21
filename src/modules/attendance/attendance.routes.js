@@ -3,11 +3,12 @@ const asyncHandler = require('../../utils/asyncHandler');
 const authenticate = require('../../middleware/authenticate');
 const orgGuard = require('../../middleware/orgGuard');
 const roleGuard = require('../../middleware/roleGuard');
+const planFeatureGate = require('../../middleware/planFeatureGate');
 const attendanceController = require('./attendance.controller');
 
 const router = express.Router();
 
-router.use(authenticate, orgGuard);
+router.use(authenticate, orgGuard, planFeatureGate('mobile_attendance'));
 
 router.post('/challenge', asyncHandler(attendanceController.challenge));
 router.post('/check-in', asyncHandler(attendanceController.checkIn));
@@ -24,8 +25,8 @@ router.get('/stats/top-late', roleGuard('admin', 'manager', 'superadmin'), async
 router.get('/stats/activity', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.activity));
 router.get('/live', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.live));
 router.get('/', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.list));
-router.get('/export', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.exportCsv));
-router.post('/export', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.exportCsv));
+router.get('/export', roleGuard('admin', 'manager', 'superadmin'), planFeatureGate('reports', 'full'), asyncHandler(attendanceController.exportCsv));
+router.post('/export', roleGuard('admin', 'manager', 'superadmin'), planFeatureGate('reports', 'full'), asyncHandler(attendanceController.exportCsv));
 router.put('/:id/flag-anomaly', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.flagAnomaly));
 router.put('/:id/unflag-anomaly', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.unflagAnomaly));
 router.get('/:id', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.getById));

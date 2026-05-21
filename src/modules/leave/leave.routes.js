@@ -4,11 +4,12 @@ const authenticate = require('../../middleware/authenticate');
 const orgGuard = require('../../middleware/orgGuard');
 const roleGuard = require('../../middleware/roleGuard');
 const blockImpersonatedWrites = require('../../middleware/blockImpersonatedWrites');
+const planFeatureGate = require('../../middleware/planFeatureGate');
 const leaveController = require('./leave.controller');
 
 const router = express.Router();
 
-router.use(authenticate, orgGuard);
+router.use(authenticate, orgGuard, planFeatureGate('leave_management'));
 
 router.get('/', asyncHandler(leaveController.list));
 router.post('/', blockImpersonatedWrites, asyncHandler(leaveController.create));

@@ -25,6 +25,7 @@ router.get('/organisations/:orgId', asyncHandler(superadminController.getOrg));
 router.get('/organisations/:orgId/employees', asyncHandler(superadminController.getOrgEmployees));
 router.get('/organisations/:orgId/attendance/today', asyncHandler(superadminController.getOrgAttendance));
 router.get('/organisations/:orgId/billing', asyncHandler(superadminController.getOrgBilling));
+router.get('/organisations/:orgId/plan-history', asyncHandler(superadminController.getOrgPlanHistory));
 router.post('/organisations/:orgId/billing/alerts', asyncHandler(superadminController.sendBillingAlert));
 router.post('/organisations/:orgId/admin-invite/resend', asyncHandler(superadminController.resendOrgInvite));
 router.put('/organisations/:orgId/profile', asyncHandler(superadminController.updateOrgProfile));
@@ -65,6 +66,9 @@ router.get('/billing/churn', asyncHandler(superadminController.billingChurn));
 router.get('/billing/invoices', asyncHandler(superadminController.billingInvoices));
 router.get('/billing/invoices/export', asyncHandler(superadminController.exportBillingInvoices));
 router.get('/billing/top-orgs', asyncHandler(superadminController.billingTopOrgs));
+router.get('/plans', asyncHandler(superadminController.listPlans));
+router.post('/plans', asyncHandler(superadminController.upsertPlan));
+router.put('/plans/:code', asyncHandler(superadminController.upsertPlan));
 
 router.get('/feature-flags', asyncHandler(superadminController.getFeatureFlags));
 router.put('/feature-flags/:key/global', asyncHandler(superadminController.setGlobalFeatureFlag));

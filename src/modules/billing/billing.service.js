@@ -3,7 +3,8 @@ const { Op } = require('sequelize');
 const env = require('../../config/env');
 const { sequelize } = require('../../config/database');
 const { Employee, Organisation, PaymentRecord } = require('../../models');
-const { PLAN_PRICES, PLAN_LABELS } = require('../../utils/constants');
+const { PLAN_LABELS } = require('../../utils/constants');
+const planService = require('../plan/plan.service');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -42,7 +43,8 @@ function getPlanLabel(plan) {
 }
 
 function getPlanPrice(plan) {
-  return Number(PLAN_PRICES[plan] || 0);
+  const fallback = planService.DEFAULT_PLAN_DEFINITIONS.find((definition) => definition.code === plan);
+  return Number(fallback?.price_per_employee || fallback?.monthly_price || 0);
 }
 
 async function getOrganisation(orgId) {
@@ -277,7 +279,9 @@ async function buildBillingSnapshot(orgId) {
   const periodEnd = getPeriodEnd();
   const dueDate = getDueDate();
   const plan = organisation.plan || 'trial';
-  const amount = employeeCount * getPlanPrice(plan);
+  const billing = await planService.getBillingForOrganisation(organisation, employeeCount);
+  const amount = billing.monthlyAmount;
+  const planLabel = billing.mapped?.name || getPlanLabel(plan);
   const invoiceId = `inv-${organisation.id}-${monthKey}`;
   const invoiceNumber = formatInvoiceNumber(organisation.id, monthKey);
 
@@ -296,7 +300,7 @@ async function buildBillingSnapshot(orgId) {
           status: amount === 0 ? 'paid' : 'due',
           employeeCount,
           plan,
-          planLabel: getPlanLabel(plan),
+          planLabel,
           isCurrent: true,
           period: {
             key: monthKey,
@@ -315,7 +319,7 @@ async function buildBillingSnapshot(orgId) {
       status: amount === 0 ? 'paid' : 'due',
       employeeCount,
       plan,
-      planLabel: getPlanLabel(plan),
+      planLabel,
       isCurrent: true,
       period: {
         key: monthKey,
@@ -336,7 +340,7 @@ async function buildBillingSnapshot(orgId) {
       paymentRecordToInvoice(record, {
         orgId,
         plan,
-        planLabel: getPlanLabel(plan),
+        planLabel,
       })
     );
 
@@ -359,6 +363,7 @@ async function buildBillingSnapshot(orgId) {
     currentInvoice,
     invoices,
     settings,
+    planDefinition: billing.mapped,
   };
 }
 
@@ -396,26 +401,28 @@ async function createRazorpayOrder({ amount, receipt, notes }) {
 }
 
 async function getCurrentPlan(orgId) {
-  const { organisation, employeeCount, currentInvoice } = await buildBillingSnapshot(orgId);
+  const { organisation, employeeCount, currentInvoice, planDefinition } = await buildBillingSnapshot(orgId);
   const trialEndsAt = organisation.trial_ends_at;
   const isTrial = organisation.plan === 'trial';
+  const planName = planDefinition?.name || getPlanLabel(organisation.plan);
   const features = [
     `${employeeCount} active employees`,
-    `${getPlanLabel(organisation.plan)} billing model`,
-    isTrial ? '15 day free trial' : 'Monthly organisation billing',
+    `${planName} billing model`,
+    isTrial ? `${planDefinition?.trialDays || 15} day free trial` : 'Monthly organisation billing',
   ];
 
   return {
-    name: getPlanLabel(organisation.plan),
+    name: planName,
     code: organisation.plan,
-    price: getPlanPrice(organisation.plan),
-    billingUnit: 'employee/month',
+    price: planDefinition?.pricePerEmployee ?? getPlanPrice(organisation.plan),
+    billingUnit: planDefinition?.billingType === 'flat' ? 'month' : 'employee/month',
     employeeCount,
     monthlyAmount: currentInvoice.amount,
     currency: 'INR',
     trialEndsAt,
     currentInvoice,
     features,
+    planDefinition,
   };
 }
 

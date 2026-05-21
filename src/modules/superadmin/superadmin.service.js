@@ -1,18 +1,16 @@
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 const XLSX = require('xlsx');
-const {  AuditLog, Attendance, AttendanceSession, Branch, Department, Employee, ImpersonationSession, Organisation, PaymentRecord, RefreshToken, Shift, sequelize } = require('../../models');
+const {  AuditLog, Attendance, AttendanceSession, Branch, Department, Employee, ImpersonationSession, Organisation, PaymentRecord, PlanChangeHistory, RefreshToken, Shift, sequelize } = require('../../models');
 const { compareValue, hashValue, signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/auth');
 const { getPagination } = require('../../utils/pagination');
 const { redisClient } = require('../../config/redis');
 const env = require('../../config/env');
 const queues = require('../../queues');
 const { queueWelcomeEmail, queueBillingAlertEmail } = require('../notification/notification.service');
-const { PLAN_PRICES } = require('../../utils/constants');
 const { getRequestMetricsSnapshot } = require('../../utils/requestMetrics');
 const { getRekognitionHealth } = require('../face/face.cloudService');
-
-const ALLOWED_PLANS = ['trial', 'standard'];
+const planService = require('../plan/plan.service');
 const BILLING_ALERT_TYPES = [
   'payment_due',
   'payment_overdue',
@@ -206,7 +204,19 @@ function formatMonthLabel(dateInput) {
 }
 
 function getOrgMonthlyMrr(org, employeeCount) {
-  return Number(employeeCount || 0) * Number(PLAN_PRICES[org.plan] || 0);
+  const fallback = planService.DEFAULT_PLAN_DEFINITIONS.find((plan) => plan.code === org.plan) || {};
+  const snapshot = org.settings?.planSnapshot || {};
+  const billingType = org.planBillingType || snapshot.billingType || fallback.billing_type;
+  const monthlyPrice = org.planMonthlyPrice ?? snapshot.monthlyPrice ?? fallback.monthly_price;
+  const pricePerEmployee = org.planPricePerEmployee ?? snapshot.pricePerEmployee ?? fallback.price_per_employee;
+
+  if (billingType === 'flat') {
+    return Number(monthlyPrice || 0);
+  }
+  if (billingType === 'per_employee') {
+    return Number(employeeCount || 0) * Number(pricePerEmployee || 0);
+  }
+  return 0;
 }
 
 function formatAuditLogRecord(row, orgMap = {}, actorMap = {}) {
@@ -991,6 +1001,7 @@ async function buildOrgSummary(org) {
 
   const status = deriveOrgStatus(org);
   const health = getOrgHealth(status, employeeCount, branchCount, org);
+  const billing = await planService.getBillingForOrganisation(org, employeeCount);
 
   return {
     id: org.id,
@@ -1014,7 +1025,8 @@ async function buildOrgSummary(org) {
     suspensionReason: org.suspension_reason,
     cancelledAt: org.cancelled_at,
     cancellationReason: org.cancellation_reason,
-    mrr: employeeCount * (PLAN_PRICES[org.plan] || 0),
+    planDefinition: billing.mapped,
+    mrr: billing.monthlyAmount,
   };
 }
 
@@ -1179,12 +1191,13 @@ async function createOrg(payload) {
   const adminLastName = String(payload.adminLastName || '').trim();
   const adminEmail = String(payload.adminEmail || '').trim().toLowerCase();
   const adminPhone = String(payload.adminPhone || '').trim();
-  const plan = payload.plan || 'trial';
+  const plan = String(payload.plan || 'trial').trim().toLowerCase();
   const timezone = payload.timezone || 'Asia/Kolkata';
+  const planDefinition = await planService.getPlanByCode(plan);
 
-  if (!ALLOWED_PLANS.includes(plan)) {
+  if (!planDefinition) {
     throw createError('SA_025', 'Invalid organisation plan', 422, [
-      { field: 'plan', message: 'Plan must be trial or standard' },
+      { field: 'plan', message: 'Plan must be trial, standard, or enterprise' },
     ]);
   }
 
@@ -1218,11 +1231,15 @@ async function createOrg(payload) {
         name: orgName,
         slug,
         plan,
+        plan_definition_id: planDefinition.id,
         timezone,
-        trial_ends_at: plan === 'trial' ? new Date(Date.now() + 15 * 24 * 60 * 60 * 1000) : null,
+        trial_ends_at: planDefinition.trial_days
+          ? new Date(Date.now() + Number(planDefinition.trial_days) * 24 * 60 * 60 * 1000)
+          : null,
         is_active: true,
         settings: {
           timezone,
+          planSnapshot: planService.planSnapshot(planDefinition),
         },
       },
       { transaction }
@@ -1859,9 +1876,12 @@ async function transferOrgOwner({ orgId, employeeId, reason, actorId }) {
 
 async function changePlan({ orgId, plan, reason, actorId, effectiveDate }) {
   const planChangeReason = normalizeRequiredReason(reason, 'reason');
-  if (!ALLOWED_PLANS.includes(plan)) {
+  const nextPlanCode = String(plan || '').trim().toLowerCase();
+  const planDefinition = await planService.getPlanByCode(nextPlanCode);
+
+  if (!planDefinition) {
     throw createError('SA_025', 'Invalid organisation plan', 422, [
-      { field: 'plan', message: 'Plan must be trial or standard' },
+      { field: 'plan', message: 'Plan must be trial, standard, or enterprise' },
     ]);
   }
 
@@ -1879,24 +1899,87 @@ async function changePlan({ orgId, plan, reason, actorId, effectiveDate }) {
     ]);
   }
 
-  await org.update({
-    plan,
-    settings: {
-      ...(org.settings || {}),
-      lastPlanChange: {
-        from: org.plan,
-        to: plan,
-        reason: planChangeReason,
-        changedBy: actorId || null,
-        changedAt: new Date().toISOString(),
-        effectiveAt: effectiveAt.toISOString(),
+  await sequelize.transaction(async (transaction) => {
+    await org.update({
+      plan: nextPlanCode,
+      plan_definition_id: planDefinition.id,
+      trial_ends_at: planDefinition.trial_days
+        ? new Date(Date.now() + Number(planDefinition.trial_days) * 24 * 60 * 60 * 1000)
+        : null,
+      settings: {
+        ...(org.settings || {}),
+        planSnapshot: planService.planSnapshot(planDefinition),
+        lastPlanChange: {
+          from: org.plan,
+          to: nextPlanCode,
+          reason: planChangeReason,
+          changedBy: actorId || null,
+          changedAt: new Date().toISOString(),
+          effectiveAt: effectiveAt.toISOString(),
+        },
       },
-    },
+    }, { transaction });
+
+    await PlanChangeHistory.create({
+      org_id: org.id,
+      old_plan: oldValue.plan,
+      new_plan: nextPlanCode,
+      old_plan_definition_id: oldValue.plan_definition_id || null,
+      new_plan_definition_id: planDefinition.id,
+      actor_id: actorId || null,
+      reason: planChangeReason,
+      effective_at: effectiveAt,
+      metadata: {
+        oldSettings: oldValue.settings || {},
+        newSnapshot: planService.planSnapshot(planDefinition),
+      },
+    }, { transaction });
   });
 
   return {
     oldValue,
     newValue: await getOrgDetail(orgId),
+  };
+}
+
+async function getOrgPlanHistory(orgId, query = {}) {
+  const limit = Math.max(1, Math.min(Number(query.limit) || 25, 100));
+  const page = Math.max(1, Number(query.page) || 1);
+  const offset = (page - 1) * limit;
+
+  const org = await Organisation.findOne({ where: { id: orgId }, attributes: ['id'] });
+  if (!org) {
+    throw createError('HTTP_404', 'Organisation not found', 404);
+  }
+
+  const result = await PlanChangeHistory.findAndCountAll({
+    where: { org_id: orgId },
+    include: [
+      { model: Employee, as: 'actor', attributes: ['id', 'name', 'email'], required: false },
+    ],
+    order: [['created_at', 'DESC']],
+    limit,
+    offset,
+  });
+
+  return {
+    history: result.rows.map((row) => ({
+      id: row.id,
+      oldPlan: row.old_plan,
+      newPlan: row.new_plan,
+      oldPlanDefinitionId: row.old_plan_definition_id,
+      newPlanDefinitionId: row.new_plan_definition_id,
+      actorId: row.actor_id,
+      actorName: row.actor?.name || null,
+      actorEmail: row.actor?.email || null,
+      reason: row.reason,
+      effectiveAt: row.effective_at,
+      metadata: row.metadata || {},
+      createdAt: row.created_at,
+    })),
+    total: result.count,
+    page,
+    limit,
   };
 }
 
@@ -3104,9 +3187,9 @@ async function getAnalyticsRetention(query = {}) {
 }
 
 async function getBillingOverviewData() {
-  const [orgs, employeeCounts, paymentRecords] = await Promise.all([
+  const [orgs, employeeCounts, paymentRecords, planDefinitions] = await Promise.all([
     Organisation.findAll({
-      attributes: ['id', 'name', 'slug', 'plan', 'is_active', 'created_at', 'updated_at', 'cancelled_at', 'cancellation_reason'],
+      attributes: ['id', 'name', 'slug', 'plan', 'settings', 'is_active', 'created_at', 'updated_at', 'cancelled_at', 'cancellation_reason'],
       paranoid: false,
     }),
     Employee.findAll({
@@ -3123,7 +3206,12 @@ async function getBillingOverviewData() {
       attributes: ['id', 'org_id', 'invoice_id', 'amount_paise', 'currency', 'status', 'created_at'],
       order: [['created_at', 'DESC']],
     }),
+    planService.listPlanDefinitions({ includeInactive: true }),
   ]);
+  const planByCode = planDefinitions.reduce((acc, plan) => {
+    acc[plan.code] = plan;
+    return acc;
+  }, {});
 
   const employeeCountByOrg = employeeCounts.reduce((acc, employee) => {
     const key = employee.org_id;
@@ -3133,7 +3221,7 @@ async function getBillingOverviewData() {
 
   const orgBillingRows = orgs.map((org) => {
     const employeeCount = employeeCountByOrg[org.id] || 0;
-    const mrr = getOrgMonthlyMrr(org, employeeCount);
+    const plan = planByCode[org.plan] || {};
 
     return {
       id: org.id,
@@ -3146,7 +3234,14 @@ async function getBillingOverviewData() {
       cancelledAt: org.cancelled_at,
       cancellationReason: org.cancellation_reason,
       employeeCount,
-      mrr,
+      planBillingType: plan.billingType,
+      planPricePerEmployee: plan.pricePerEmployee,
+      planMonthlyPrice: plan.monthlyPrice,
+      mrr: plan.billingType === 'per_employee'
+        ? Number(employeeCount || 0) * Number(plan.pricePerEmployee || 0)
+        : plan.billingType === 'flat'
+          ? Number(plan.monthlyPrice || 0)
+          : 0,
     };
   });
 
@@ -3242,6 +3337,30 @@ async function getBillingPlanBreakdown() {
     });
 
   return Array.from(breakdown.values()).sort((a, b) => b.revenue - a.revenue);
+}
+
+async function listPlans() {
+  const plans = await planService.listPlanDefinitions({ includeInactive: true, includeUsage: true });
+  const breakdown = await getBillingPlanBreakdown();
+  const billingByPlan = breakdown.reduce((acc, row) => {
+    acc[row.plan] = row;
+    return acc;
+  }, {});
+
+  return {
+    plans: plans.map((plan) => ({
+      ...plan,
+      usage: {
+        ...(plan.usage || {}),
+        revenue: billingByPlan[plan.code]?.revenue || 0,
+      },
+    })),
+  };
+}
+
+async function upsertPlan(payload, code = null) {
+  const plan = await planService.upsertPlanDefinition(payload, code);
+  return { plan };
 }
 
 async function getBillingChurnedOrgs(query = {}) {
@@ -3513,6 +3632,7 @@ module.exports = {
   addOrgNote,
   transferOrgOwner,
   changePlan,
+  getOrgPlanHistory,
   extendTrial,
   getStats,
   getAuditLogs,
@@ -3533,6 +3653,8 @@ module.exports = {
   getAnalyticsUsage,
   getAnalyticsRetention,
   getRevenueSummary,
+  listPlans,
+  upsertPlan,
   getBillingMrrHistory,
   getBillingPlanBreakdown,
   getBillingChurnedOrgs,

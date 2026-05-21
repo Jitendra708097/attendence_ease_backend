@@ -6,6 +6,7 @@ const { scopedModel } = require('../../utils/scopedModel');
 const { getPagingData } = require('../../utils/pagination');
 const { hashValue } = require('../../utils/auth');
 const { notification } = require('../../queues');
+const planService = require('../plan/plan.service');
 
 const BULK_UPLOAD_MAX_ROWS = 500;
 const DEFAULT_NOTIFICATION_PREFERENCES = {
@@ -322,6 +323,11 @@ async function createEmployee(orgId, organisation, payload) {
     error.code = 'EMP_002';
     error.statusCode = 400;
     throw error;
+  }
+
+  await planService.assertEmployeeLimit(orgId, 1);
+  if (payload.role === 'manager') {
+    await planService.assertManagerLimit(orgId, 1);
   }
 
   const references = await resolveEmployeeReferences(orgId, payload);

@@ -20,6 +20,7 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM('trial', 'standard', 'starter', 'growth', 'enterprise'),
         defaultValue: 'trial',
       },
+      plan_definition_id: DataTypes.UUID,
       trial_ends_at: DataTypes.DATE,
       timezone: {
         type: DataTypes.STRING,
@@ -64,6 +65,14 @@ module.exports = (sequelize, DataTypes) => {
     Organisation.hasMany(models.Employee, {
       foreignKey: 'org_id',
       as: 'employees',
+    });
+    Organisation.belongsTo(models.PlanDefinition, {
+      foreignKey: 'plan_definition_id',
+      as: 'planDefinition',
+    });
+    Organisation.hasMany(models.PlanChangeHistory, {
+      foreignKey: 'org_id',
+      as: 'planChanges',
     });
   };
 
