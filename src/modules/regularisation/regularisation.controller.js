@@ -30,6 +30,19 @@ async function pending(req, res) {
   }
 }
 
+async function mine(req, res) {
+  try {
+    const data = await regularisationService.listMyRegularisations({
+      orgId: req.org_id,
+      employeeId: req.employee.id,
+      query: req.query,
+    });
+    return ok(res, data, 'Regularisation requests fetched');
+  } catch (error) {
+    return fail(res, error.code || 'REG_006', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function managerApprove(req, res) {
   try {
     const data = await regularisationService.managerApproveRegularisation({
@@ -76,6 +89,7 @@ async function reject(req, res) {
 module.exports = {
   create,
   pending,
+  mine,
   managerApprove,
   approve,
   reject,

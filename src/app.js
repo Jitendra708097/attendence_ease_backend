@@ -85,6 +85,7 @@ app.use('/api/v1/holidays', holidayRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/device-tokens', deviceTokenRoutes);
 app.use('/api/v1/org', orgRoutes);
+app.use('/api/v1/regularisation', regularisationRoutes);
 app.use('/api/v1/regularisations', regularisationRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/shifts', shiftRoutes);

@@ -257,6 +257,45 @@ async function listPendingRegularisations({ orgId, role, employeeId, query = {} 
   };
 }
 
+async function listMyRegularisations({ orgId, employeeId, query = {} }) {
+  const statusFilter = String(query.status || '').trim();
+  const requestId = query.requestId || query.regularisationId || query.id;
+  const limit = Math.min(Number(query.limit) || 50, 100);
+  const where = {
+    org_id: orgId,
+    emp_id: employeeId,
+  };
+
+  if (requestId) {
+    where.id = requestId;
+  } else if (statusFilter) {
+    where.status = statusFilter;
+  }
+
+  const rows = await Regularisation.findAll({
+    where,
+    include: [
+      {
+        model: Employee,
+        as: 'employee',
+        attributes: ['id', 'name', 'role'],
+      },
+      {
+        model: Attendance,
+        as: 'attendance',
+        attributes: ['id', 'first_check_in', 'last_check_out', 'status'],
+      },
+    ],
+    order: [['created_at', 'DESC']],
+    limit,
+  });
+
+  return {
+    regularisations: rows.map(toDto),
+    total: rows.length,
+  };
+}
+
 async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, date, regularisationId) {
   await notifyOrgRoles(
     orgId,
@@ -494,6 +533,7 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
 module.exports = {
   createRegularisation,
   listPendingRegularisations,
+  listMyRegularisations,
   managerApproveRegularisation,
   approveRegularisation,
   rejectRegularisation,
