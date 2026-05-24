@@ -26,6 +26,19 @@ function mapShift(shift) {
   };
 }
 
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function payloadValue(payload, field, fallback) {
+  return Object.prototype.hasOwnProperty.call(payload, field) ? payload[field] : fallback;
+}
+
 async function listShifts(orgId) {
   const shifts = await scopedModel(Shift, orgId).findAll({
     include: [
@@ -113,10 +126,10 @@ async function createShift(orgId, payload) {
     absent_after_minutes: payload.absentAfter,
     overtime_after_minutes: payload.otAfter,
     min_overtime_minutes: payload.minOtMins,
-    break_minutes: payload.breakMins,
-    min_session_minutes: payload.minSessionMins,
-    session_cooldown_minutes: payload.sessionCooldownMins,
-    max_sessions_per_day: payload.maxSessionsPerDay,
+    break_minutes: optionalNumber(payload.breakMins),
+    min_session_minutes: optionalNumber(payload.minSessionMins),
+    session_cooldown_minutes: optionalNumber(payload.sessionCooldownMins),
+    max_sessions_per_day: optionalNumber(payload.maxSessionsPerDay),
   });
 
   return mapShift(shift);
@@ -149,10 +162,10 @@ async function updateShift(orgId, id, payload) {
     absent_after_minutes: payload.absentAfter ?? shift.absent_after_minutes,
     overtime_after_minutes: payload.otAfter ?? shift.overtime_after_minutes,
     min_overtime_minutes: payload.minOtMins ?? shift.min_overtime_minutes,
-    break_minutes: payload.breakMins ?? shift.break_minutes,
-    min_session_minutes: payload.minSessionMins ?? shift.min_session_minutes,
-    session_cooldown_minutes: payload.sessionCooldownMins ?? shift.session_cooldown_minutes,
-    max_sessions_per_day: payload.maxSessionsPerDay ?? shift.max_sessions_per_day,
+    break_minutes: optionalNumber(payloadValue(payload, 'breakMins', shift.break_minutes)),
+    min_session_minutes: optionalNumber(payloadValue(payload, 'minSessionMins', shift.min_session_minutes)),
+    session_cooldown_minutes: optionalNumber(payloadValue(payload, 'sessionCooldownMins', shift.session_cooldown_minutes)),
+    max_sessions_per_day: optionalNumber(payloadValue(payload, 'maxSessionsPerDay', shift.max_sessions_per_day)),
   });
 
   await notifyOrgRoles(orgId, ['admin', 'manager'], {

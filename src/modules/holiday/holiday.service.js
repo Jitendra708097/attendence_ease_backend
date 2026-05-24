@@ -1,5 +1,8 @@
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 const { Branch, Holiday } = require('../../models');
+
+const HOLIDAY_IMPORT_MAX_ROWS = 500;
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -79,6 +82,96 @@ function buildWhere(orgId, query = {}) {
   }
 
   return where;
+}
+
+function normalizeCellValue(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function normalizeHeader(value) {
+  return normalizeCellValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function pickValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && normalizeCellValue(row[key]) !== '') {
+      return row[key];
+    }
+  }
+  return '';
+}
+
+function formatDateParts(year, month, day) {
+  return [
+    String(year).padStart(4, '0'),
+    String(month).padStart(2, '0'),
+    String(day).padStart(2, '0'),
+  ].join('-');
+}
+
+function normalizeExcelDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return formatDateParts(value.getFullYear(), value.getMonth() + 1, value.getDate());
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) {
+      return formatDateParts(parsed.y, parsed.m, parsed.d);
+    }
+  }
+
+  const text = normalizeCellValue(value);
+  if (!text) return '';
+
+  const isoMatch = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (isoMatch) {
+    return formatDateParts(isoMatch[1], isoMatch[2], isoMatch[3]);
+  }
+
+  const slashMatch = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (slashMatch) {
+    const first = Number(slashMatch[1]);
+    const second = Number(slashMatch[2]);
+    const year = Number(slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3]);
+    const day = first > 12 ? first : second;
+    const month = first > 12 ? second : first;
+    return formatDateParts(year, month, day);
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return formatDateParts(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+  }
+
+  return text;
+}
+
+function normalizeBoolean(value) {
+  const text = normalizeCellValue(value).toLowerCase();
+  return ['true', 'yes', 'y', '1', 'recurring', 'yearly'].includes(text);
+}
+
+function mapImportRow(row = {}, branchesByName = new Map()) {
+  const normalized = Object.entries(row).reduce((accumulator, [key, value]) => {
+    accumulator[normalizeHeader(key)] = value;
+    return accumulator;
+  }, {});
+
+  const branchId = normalizeCellValue(pickValue(normalized, ['branch_id', 'branchid']));
+  const branchName = normalizeCellValue(pickValue(normalized, ['branch_name', 'branch', 'location']));
+  const branch = branchName ? branchesByName.get(branchName.toLowerCase()) : null;
+
+  return {
+    name: normalizeCellValue(pickValue(normalized, ['name', 'holiday_name', 'holiday', 'title'])),
+    date: normalizeExcelDate(pickValue(normalized, ['date', 'holiday_date'])),
+    branchId: branchId || branch?.id || null,
+    isRecurring: normalizeBoolean(pickValue(normalized, ['is_recurring', 'isrecurring', 'recurring', 'yearly'])),
+    description: normalizeCellValue(pickValue(normalized, ['description', 'note', 'notes'])),
+  };
 }
 
 async function listHolidays(orgId, query = {}) {
@@ -211,25 +304,50 @@ async function deleteHoliday(orgId, id) {
 
 async function bulkImportHolidays(orgId, body = {}) {
   const rows = Array.isArray(body.holidays) ? body.holidays : [];
+  const branches = await Branch.findAll({ where: { org_id: orgId }, attributes: ['id', 'name'] });
+  const branchesByName = new Map(branches.map((branch) => [branch.name.toLowerCase(), branch]));
   const results = [];
+
+  if (rows.length > HOLIDAY_IMPORT_MAX_ROWS) {
+    throw createError('HOLIDAY_004', `You can import at most ${HOLIDAY_IMPORT_MAX_ROWS} holidays at a time`, 422);
+  }
 
   for (const [index, row] of rows.entries()) {
     try {
-      const holiday = await createHoliday(orgId, row);
+      const holiday = await createHoliday(orgId, mapImportRow(row, branchesByName));
       results.push({ row: index + 1, status: 'success', holiday });
     } catch (error) {
       results.push({ row: index + 1, status: 'error', message: error.message });
     }
   }
 
-  return { results };
+  return {
+    total: rows.length,
+    created: results.filter((result) => result.status === 'success').length,
+    failed: results.filter((result) => result.status === 'error').length,
+    results,
+  };
+}
+
+async function importHolidaysFromFile(orgId, fileBuffer) {
+  const workbook = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+  if (!sheet) {
+    throw createError('HOLIDAY_004', 'Excel sheet is empty', 422);
+  }
+
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+  return bulkImportHolidays(orgId, { holidays: rows });
 }
 
 module.exports = {
+  HOLIDAY_IMPORT_MAX_ROWS,
   listHolidays,
   getHoliday,
   createHoliday,
   updateHoliday,
   deleteHoliday,
   bulkImportHolidays,
+  importHolidaysFromFile,
 };

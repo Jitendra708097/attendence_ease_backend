@@ -261,6 +261,97 @@ function renderInvoiceHtml({ invoice, organisation }) {
 </html>`;
 }
 
+function escapePdfText(value) {
+  return String(value ?? '')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
+}
+
+function pdfTextLine(text, x, y, size = 10, font = 'F1') {
+  return `BT /${font} ${size} Tf ${x} ${y} Td (${escapePdfText(text)}) Tj ET`;
+}
+
+function buildPdf(objects) {
+  const chunks = ['%PDF-1.4\n'];
+  const offsets = [0];
+
+  objects.forEach((object, index) => {
+    offsets[index + 1] = Buffer.byteLength(chunks.join(''), 'utf8');
+    chunks.push(`${index + 1} 0 obj\n${object}\nendobj\n`);
+  });
+
+  const xrefOffset = Buffer.byteLength(chunks.join(''), 'utf8');
+  chunks.push(`xref\n0 ${objects.length + 1}\n`);
+  chunks.push('0000000000 65535 f \n');
+  offsets.slice(1).forEach((offset) => {
+    chunks.push(`${String(offset).padStart(10, '0')} 00000 n \n`);
+  });
+  chunks.push(`trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+
+  return Buffer.from(chunks.join(''), 'utf8');
+}
+
+function renderInvoicePdf({ invoice, organisation }) {
+  const period = invoice.period || {};
+  const lineAmount = Number(invoice.amount || 0);
+  const statusLabel = String(invoice.status || 'due').toUpperCase();
+  const planLabel = invoice.planLabel || getPlanLabel(invoice.plan);
+  const lines = [
+    pdfTextLine('AttendEase', 50, 790, 22, 'F2'),
+    pdfTextLine('Employee attendance management platform', 50, 770, 9),
+    pdfTextLine('INVOICE', 440, 790, 18, 'F2'),
+    pdfTextLine(invoice.invoiceNumber, 440, 770, 10),
+    pdfTextLine(`Status: ${statusLabel}`, 440, 752, 10, 'F2'),
+    '50 735 m 545 735 l S',
+
+    pdfTextLine('Bill To', 50, 705, 11, 'F2'),
+    pdfTextLine(organisation.name, 50, 688, 10, 'F2'),
+    pdfTextLine(`Organisation ID: ${organisation.id}`, 50, 672, 9),
+
+    pdfTextLine('Invoice Details', 330, 705, 11, 'F2'),
+    pdfTextLine(`Invoice Date: ${formatDisplayDate(invoice.date)}`, 330, 688, 9),
+    pdfTextLine(`Due Date: ${formatDisplayDate(invoice.dueDate)}`, 330, 672, 9),
+    pdfTextLine(`Period: ${formatDisplayDate(period.start)} - ${formatDisplayDate(period.end)}`, 330, 656, 9),
+
+    '50 620 m 545 620 l S',
+    pdfTextLine('Description', 55, 602, 10, 'F2'),
+    pdfTextLine('Employees', 315, 602, 10, 'F2'),
+    pdfTextLine('Plan', 390, 602, 10, 'F2'),
+    pdfTextLine('Amount', 485, 602, 10, 'F2'),
+    '50 590 m 545 590 l S',
+    pdfTextLine(`AttendEase ${planLabel} subscription`, 55, 570, 10),
+    pdfTextLine(invoice.employeeCount, 330, 570, 10),
+    pdfTextLine(planLabel, 390, 570, 10),
+    pdfTextLine(formatDisplayAmount(lineAmount, invoice.currency), 465, 570, 10),
+    '50 552 m 545 552 l S',
+
+    pdfTextLine('Subtotal', 380, 510, 10),
+    pdfTextLine(formatDisplayAmount(lineAmount, invoice.currency), 465, 510, 10),
+    pdfTextLine('Tax', 380, 492, 10),
+    pdfTextLine(formatDisplayAmount(0, invoice.currency), 465, 492, 10),
+    pdfTextLine('Total', 380, 468, 12, 'F2'),
+    pdfTextLine(formatDisplayAmount(lineAmount, invoice.currency), 465, 468, 12, 'F2'),
+
+    '50 115 m 545 115 l S',
+    pdfTextLine('This invoice is generated electronically by AttendEase.', 50, 95, 9),
+    pdfTextLine('Trial invoices may show a zero amount and paid status because no payment is required.', 50, 80, 9),
+  ];
+
+  const stream = lines.join('\n');
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
+    `<< /Length ${Buffer.byteLength(stream, 'utf8')} >>\nstream\n${stream}\nendstream`,
+  ];
+
+  return buildPdf(objects);
+}
+
 async function buildBillingSnapshot(orgId) {
   const organisation = await getOrganisation(orgId);
   const [employeeCount, paymentRecords] = await Promise.all([
@@ -662,9 +753,10 @@ async function downloadInvoice(orgId, invoiceId) {
 
   return {
     invoice,
-    filename: `${invoice.invoiceNumber}.html`,
-    contentType: 'text/html; charset=utf-8',
-    content: renderInvoiceHtml({ invoice, organisation }),
+    filename: `${invoice.invoiceNumber}.pdf`,
+    contentType: 'application/pdf',
+    encoding: 'base64',
+    content: renderInvoicePdf({ invoice, organisation }).toString('base64'),
   };
 }
 

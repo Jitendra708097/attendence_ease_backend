@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "test": "node --test tests/*.test.js",
     "db:migrate": "sequelize-cli db:migrate",
-    "db:seed:all": "sequelize-cli db:seed:all"
+    "db:seed:all": "sequelize-cli db:seed:all",
+    "prod:start": "pm2-runtime src/server.js"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.1012.0",
@@ -35,6 +36,7 @@
     "nodemailer": "^8.0.4",
     "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",
+    "pm2": "^7.0.1",
     "redis": "^5.11.0",
     "sequelize": "^6.37.7",
     "sequelize-cli": "^6.6.5",

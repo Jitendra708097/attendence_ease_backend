@@ -42,8 +42,15 @@ async function remove(req, res) {
 }
 
 async function bulkImport(req, res) {
+  if (!req.file && !Array.isArray(req.body?.holidays)) {
+    return fail(res, 'HOLIDAY_004', 'Excel file or holiday rows are required', [], 400);
+  }
+
   try {
-    return ok(res, await holidayService.bulkImportHolidays(req.org_id, req.body), 'Holiday import processed');
+    const data = req.file
+      ? await holidayService.importHolidaysFromFile(req.org_id, req.file.buffer)
+      : await holidayService.bulkImportHolidays(req.org_id, req.body);
+    return ok(res, data, 'Holiday import processed');
   } catch (error) {
     return fail(res, error.code || 'HOLIDAY_004', error.message, error.details || [], error.statusCode || 400);
   }

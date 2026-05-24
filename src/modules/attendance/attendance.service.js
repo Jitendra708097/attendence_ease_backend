@@ -320,6 +320,20 @@ function buildShiftInfo(shift) {
   };
 }
 
+function getPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function hasReachedSessionLimit(attendance, shift) {
+  const maxSessionsPerDay = getPositiveNumber(shift.max_sessions_per_day);
+  return maxSessionsPerDay != null && Number(attendance.session_count || 0) >= maxSessionsPerDay;
+}
+
+function getSessionCooldownMinutes(shift) {
+  return getPositiveNumber(shift.session_cooldown_minutes);
+}
+
 function localDateTimeToUtc(dateString, timeString, timezone = 'UTC') {
   const [year, month, day] = String(dateString || '').split('-').map(Number);
   const [hour, minute, second] = String(timeString || '00:00:00')
@@ -589,6 +603,18 @@ function buildEmployeeAttendanceWhere(orgId, query = {}) {
   }
 
   return where;
+}
+
+function attendanceEmployeeInclude(attributes = ['id', 'name', 'email']) {
+  return {
+    model: Employee,
+    as: 'employee',
+    attributes,
+    required: true,
+    where: {
+      role: { [Op.ne]: 'superadmin' },
+    },
+  };
 }
 
 function buildAttendanceDateWhere(dateFrom, dateTo) {
@@ -1207,13 +1233,15 @@ async function checkIn({ orgId, empId, body, req }) {
       throw createError('ATT_003', 'An attendance session is already open', 400);
     }
 
-    if (Number(existingAttendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
+    if (hasReachedSessionLimit(existingAttendance, shift)) {
       throw createError('ATT_004', 'Maximum sessions reached for today', 400);
     }
 
-    const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
-    if (cooldownEndsAt && new Date(cooldownEndsAt) > new Date()) {
-      throw createError('ATT_004', 'Employee is in cooldown period', 400);
+    if (getSessionCooldownMinutes(shift)) {
+      const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
+      if (cooldownEndsAt && new Date(cooldownEndsAt) > new Date()) {
+        throw createError('ATT_004', 'Employee is in cooldown period', 400);
+      }
     }
   }
 
@@ -1429,9 +1457,10 @@ async function checkOut({ orgId, empId, body, req }) {
     );
   }
 
-  const cooldownEndsAt = new Date(now.getTime() + Number(shift.session_cooldown_minutes || 15) * 60 * 1000);
-  if (!body.isFinalCheckout) {
-    await redisClient.set(getCooldownKey(orgId, empId), cooldownEndsAt.toISOString(), 'EX', Number(shift.session_cooldown_minutes || 15) * 60);
+  const cooldownMinutes = getSessionCooldownMinutes(shift);
+  const cooldownEndsAt = cooldownMinutes ? new Date(now.getTime() + cooldownMinutes * 60 * 1000) : null;
+  if (!body.isFinalCheckout && cooldownMinutes) {
+    await redisClient.set(getCooldownKey(orgId, empId), cooldownEndsAt.toISOString(), 'EX', cooldownMinutes * 60);
   } else {
     await redisClient.del(getCooldownKey(orgId, empId));
   }
@@ -1521,13 +1550,15 @@ async function kioskCheckIn({ orgId, employee, shift, body, req, faceMatch }) {
       throw createError('ATT_003', 'Matched employee already has an open attendance session', 400);
     }
 
-    if (Number(attendance.session_count || 0) >= Number(shift.max_sessions_per_day || 3)) {
+    if (hasReachedSessionLimit(attendance, shift)) {
       throw createError('ATT_004', 'Matched employee has reached maximum sessions for today', 400);
     }
 
-    const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
-    if (cooldownEndsAt && new Date(cooldownEndsAt) > new Date()) {
-      throw createError('ATT_004', 'Matched employee is in cooldown period', 400);
+    if (getSessionCooldownMinutes(shift)) {
+      const cooldownEndsAt = await redisClient.get(getCooldownKey(orgId, empId));
+      if (cooldownEndsAt && new Date(cooldownEndsAt) > new Date()) {
+        throw createError('ATT_004', 'Matched employee is in cooldown period', 400);
+      }
     }
   }
 
@@ -1705,13 +1736,18 @@ async function kioskCheckOut({ orgId, employee, shift, body, req, faceMatch, sel
     );
   }
 
-  const cooldownEndsAt = new Date(now.getTime() + Number(shift.session_cooldown_minutes || 15) * 60 * 1000);
-  await redisClient.set(
-    getCooldownKey(orgId, empId),
-    cooldownEndsAt.toISOString(),
-    'EX',
-    Number(shift.session_cooldown_minutes || 15) * 60
-  );
+  const cooldownMinutes = getSessionCooldownMinutes(shift);
+  const cooldownEndsAt = cooldownMinutes ? new Date(now.getTime() + cooldownMinutes * 60 * 1000) : null;
+  if (cooldownMinutes) {
+    await redisClient.set(
+      getCooldownKey(orgId, empId),
+      cooldownEndsAt.toISOString(),
+      'EX',
+      cooldownMinutes * 60
+    );
+  } else {
+    await redisClient.del(getCooldownKey(orgId, empId));
+  }
 
   await log(
     req.employee,
@@ -2148,7 +2184,7 @@ async function listAttendance(orgId, query) {
 
   const result = await Attendance.findAndCountAll({
     where,
-    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name', 'email'] }],
+    include: [attendanceEmployeeInclude(['id', 'name', 'email'])],
     order: [['date', 'DESC'], ['created_at', 'DESC']],
     limit,
     offset,
@@ -2259,7 +2295,7 @@ async function exportAttendance(orgId, query) {
   const [attendanceRows, branches] = await Promise.all([
     Attendance.findAll({
       where,
-      include: [{ model: Employee, as: 'employee', attributes: ['id', 'name', 'email', 'emp_code'] }],
+      include: [attendanceEmployeeInclude(['id', 'name', 'email', 'emp_code'])],
       order: [['date', 'DESC'], ['created_at', 'DESC']],
     }),
     Branch.findAll({
@@ -2345,6 +2381,7 @@ async function getTodayStats(orgId) {
 
   const rows = await Attendance.findAll({
     where: { org_id: orgId, date: today },
+    include: [attendanceEmployeeInclude(['id'])],
   });
 
   const pendingLeaves = await LeaveRequest.count({
@@ -2391,6 +2428,7 @@ async function getTrendStats(orgId, query) {
         [Op.between]: [dates[0], dates[dates.length - 1]],
       },
     },
+    include: [attendanceEmployeeInclude(['id'])],
     attributes: ['date', 'status', 'is_late'],
     order: [['date', 'ASC']],
   });
@@ -2419,7 +2457,7 @@ async function getTopLateEmployees(orgId, query) {
         [Op.between]: [start, end],
       },
     },
-    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name'] }],
+    include: [attendanceEmployeeInclude(['id', 'name'])],
   });
 
   const grouped = rows.reduce((accumulator, row) => {
@@ -2480,7 +2518,7 @@ async function getLiveBoard(orgId, query) {
       org_id: orgId,
       date: getTodayDateString(timezone),
     },
-    include: [{ model: Employee, as: 'employee', attributes: ['id', 'name'] }],
+    include: [attendanceEmployeeInclude(['id', 'name'])],
     order: [['updated_at', 'DESC']],
   });
 
