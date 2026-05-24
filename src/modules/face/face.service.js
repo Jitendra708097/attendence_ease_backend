@@ -161,6 +161,32 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
     }
 
     if (hasLocalEmbedding) {
+      if (Buffer.isBuffer(selfieBuffer) && employee.face_embedding_id) {
+        const cloudResult = await verifyWithRekognition(selfieBuffer, employee, {
+          threshold: Math.max(80, Math.round(threshold * 100)),
+        });
+
+        if (cloudResult.matched) {
+          await safeRedisSet(dedupKey, embeddingHash, 5 * 60);
+          await safeRedisSet(
+            sessionKey,
+            JSON.stringify({
+              verifiedAt: new Date().toISOString(),
+              confidence: cloudResult.confidence,
+            }),
+            10 * 60
+          );
+
+          return {
+            verified: true,
+            source: cloudResult.provider,
+            threshold,
+            score: null,
+            confidence: cloudResult.confidence,
+          };
+        }
+      }
+
       const localResult = compareEmbeddings(normalizedEmbedding, employee.face_embedding_local);
 
       if (localResult.score >= threshold) {
@@ -178,7 +204,9 @@ async function verifyFace(empId, orgId, embedding, selfieBuffer) {
       const isBorderline = localResult.score >= Math.max(0, threshold - BORDERLINE_MARGIN);
 
       if (isBorderline) {
-        const cloudResult = await verifyWithRekognition(selfieBuffer, employee);
+        const cloudResult = await verifyWithRekognition(selfieBuffer, employee, {
+          threshold: Math.max(80, Math.round(threshold * 100)),
+        });
 
         if (cloudResult.matched) {
           await safeRedisSet(dedupKey, embeddingHash, 5 * 60);

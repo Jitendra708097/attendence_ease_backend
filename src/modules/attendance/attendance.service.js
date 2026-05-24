@@ -122,6 +122,21 @@ async function guardRecentSubmit({ orgId, empId, action, clientRequestId, ttlSec
   }
 }
 
+async function releaseRecentSubmit({ orgId, empId, action, clientRequestId }) {
+  try {
+    const keys = [...new Set([
+      getAttendanceSubmitKey(orgId, empId, action, clientRequestId),
+      getAttendanceSubmitKey(orgId, empId, action, null),
+    ])];
+
+    await redisClient.del(...keys);
+  } catch (error) {
+    return null;
+  }
+
+  return true;
+}
+
 async function pushLiveFeedEvent(orgId, payload) {
   try {
     await redisClient.lpush(getLiveFeedKey(orgId), JSON.stringify(payload));
@@ -792,6 +807,53 @@ async function resolveKioskEmbedding(faceEmbedding, selfieBuffer) {
 }
 
 async function identifyEmployeeByFace({ orgId, faceEmbedding, selfieBuffer }) {
+  const cloudSearchFirst = await searchFacesByImage(selfieBuffer, {
+    threshold: KIOSK_REKOGNITION_THRESHOLD,
+    maxFaces: 5,
+  });
+
+  if (cloudSearchFirst.matches.length > 0) {
+    const faceIds = cloudSearchFirst.matches.map((match) => match.faceId);
+    const employees = await Employee.findAll({
+      where: {
+        org_id: orgId,
+        is_active: true,
+        is_face_enrolled: true,
+        face_embedding_id: { [Op.in]: faceIds },
+      },
+      attributes: ['id', 'org_id', 'branch_id', 'shift_id', 'name', 'emp_code', 'face_embedding_id'],
+    });
+    const employeeByFaceId = employees.reduce((accumulator, employee) => {
+      accumulator[employee.face_embedding_id] = employee;
+      return accumulator;
+    }, {});
+    const rankedOrgMatches = cloudSearchFirst.matches
+      .map((match) => ({
+        ...match,
+        employee: employeeByFaceId[match.faceId],
+      }))
+      .filter((match) => match.employee)
+      .sort((left, right) => right.similarity - left.similarity);
+    const best = rankedOrgMatches[0];
+    const second = rankedOrgMatches[1];
+
+    if (best && best.similarity >= KIOSK_REKOGNITION_THRESHOLD) {
+      if (second && best.similarity - second.similarity < 2) {
+        throw createError('FACE_007', 'Face match is ambiguous. Please try again.', 409);
+      }
+
+      return {
+        employee: best.employee,
+        match: {
+          score: Number((best.similarity / 100).toFixed(3)),
+          confidence: best.similarity,
+          source: 'aws',
+          threshold: KIOSK_REKOGNITION_THRESHOLD,
+        },
+      };
+    }
+  }
+
   const searchableEmbedding = await resolveKioskEmbedding(faceEmbedding, selfieBuffer);
 
   if (searchableEmbedding) {
@@ -1111,6 +1173,7 @@ async function requestChallenge(orgId, empId) {
 
 async function checkIn({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
+  const clientRequestId = body.clientRequestId || body.client_record_id;
   await validateChallenge({
     orgId,
     empId,
@@ -1122,19 +1185,20 @@ async function checkIn({ orgId, empId, body, req }) {
     orgId,
     empId,
     action: 'check_in',
-    clientRequestId: body.clientRequestId || body.client_record_id,
+    clientRequestId,
   });
 
-  const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
-  const attendanceDate = getTodayDateString(timezone);
-  assertCheckoutWindowStillOpen(attendanceDate, shift, timezone);
-  await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
-  await validateLocationForBranch(branch, body);
-  await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
-  const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-in');
+  try {
+    const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
+    const attendanceDate = getTodayDateString(timezone);
+    assertCheckoutWindowStillOpen(attendanceDate, shift, timezone);
+    await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
+    await validateLocationForBranch(branch, body);
+    await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
+    const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-in');
 
-  const faceVerification = await faceService.verifyFace( empId, orgId, body.faceEmbedding || null, selfieBuffer );
-  const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
+    const faceVerification = await faceService.verifyFace( empId, orgId, body.faceEmbedding || null, selfieBuffer );
+    const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
   const existingAttendance = await getTodayAttendance(orgId, empId, timezone);
   if (existingAttendance) {
@@ -1233,15 +1297,20 @@ async function checkIn({ orgId, empId, body, req }) {
     status: attendance.status,
   });
 
-  return {
-    session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
-    attendanceStatus: 'pending',
-    buttonState: 'CHECKED_IN',
-  };
+    return {
+      session: { id: session.id, checkInTime: session.check_in_time, status: session.status },
+      attendanceStatus: 'pending',
+      buttonState: 'CHECKED_IN',
+    };
+  } catch (error) {
+    await releaseRecentSubmit({ orgId, empId, action: 'check_in', clientRequestId });
+    throw error;
+  }
 }
 
 async function checkOut({ orgId, empId, body, req }) {
   const timezone = await getOrgTimezone(orgId);
+  const clientRequestId = body.clientRequestId || body.client_record_id;
   await validateChallenge({
     orgId,
     empId,
@@ -1253,10 +1322,11 @@ async function checkOut({ orgId, empId, body, req }) {
     orgId,
     empId,
     action: 'check_out',
-    clientRequestId: body.clientRequestId || body.client_record_id,
+    clientRequestId,
   });
 
-  const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
+  try {
+    const { employee, shift, branch } = await getEmployeeContext(orgId, empId);
   await validateDevice({ orgId, employee, deviceId: body.deviceId, useDeviceException: body.useDeviceException, exceptionId: body.exceptionId });
   await validateLocationForBranch(branch, body);
   await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
@@ -1411,6 +1481,10 @@ async function checkOut({ orgId, empId, body, req }) {
     totalWorkedMins: totalWorkedMinutes,
     cooldownEndsAt: body.isFinalCheckout ? null : cooldownEndsAt.toISOString(),
   };
+  } catch (error) {
+    await releaseRecentSubmit({ orgId, empId, action: 'check_out', clientRequestId });
+    throw error;
+  }
 }
 
 async function kioskCheckIn({ orgId, employee, shift, body, req, faceMatch }) {
@@ -1687,6 +1761,10 @@ async function kioskCheckOut({ orgId, employee, shift, body, req, faceMatch, sel
 }
 
 async function kioskScan({ orgId, hostEmpId, body, req }) {
+  let lockedEmployeeId = null;
+  const clientRequestId = body.clientRequestId || body.client_record_id;
+
+  try {
   const hostContext = await getEmployeeContext(orgId, hostEmpId);
   await validateChallenge({
     orgId,
@@ -1716,9 +1794,10 @@ async function kioskScan({ orgId, hostEmpId, body, req }) {
     orgId,
     empId: matchedContext.employee.id,
     action: 'kiosk_scan',
-    clientRequestId: body.clientRequestId || body.client_record_id,
+    clientRequestId,
     ttlSeconds: 45,
   });
+  lockedEmployeeId = matchedContext.employee.id;
 
   const timezone = await getOrgTimezone(orgId);
   const attendance = await getTodayAttendance(orgId, matchedEmployee.id, timezone);
@@ -1755,6 +1834,17 @@ async function kioskScan({ orgId, hostEmpId, body, req }) {
     },
     faceMatch: match,
   };
+  } catch (error) {
+    if (lockedEmployeeId) {
+      await releaseRecentSubmit({
+        orgId,
+        empId: lockedEmployeeId,
+        action: 'kiosk_scan',
+        clientRequestId,
+      });
+    }
+    throw error;
+  }
 }
 
 async function syncOffline({ orgId, empId, body, req }) {

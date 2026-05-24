@@ -16,7 +16,7 @@ function canUseRekognition() {
  * @param {{ face_embedding_id?: string | null }} employee
  * @returns {Promise<{ matched: boolean, confidence: number | null, provider: string }>}
  */
-async function verifyWithRekognition(selfieBuffer, employee) {
+async function verifyWithRekognition(selfieBuffer, employee, options = {}) {
   if (!canUseRekognition() || !Buffer.isBuffer(selfieBuffer) || !employee.face_embedding_id) {
     return {
       matched: false,
@@ -30,7 +30,7 @@ async function verifyWithRekognition(selfieBuffer, employee) {
     Image: {
       Bytes: selfieBuffer,
     },
-    FaceMatchThreshold: 80,
+    FaceMatchThreshold: options.threshold || 80,
     MaxFaces: 3,
   });
 

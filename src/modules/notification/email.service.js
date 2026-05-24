@@ -2,6 +2,8 @@ const nodemailer = require('nodemailer');
 const env = require('../../config/env');
 
 let transporter;
+const SYSTEM_GENERATED_EMAIL_NOTE = 'Note: This is a system-generated email. Please do not reply.';
+const SYSTEM_GENERATED_EMAIL_NOTE_HTML = '<p style="margin-top: 24px; color: #6b7280; font-size: 13px;"><strong>Note:</strong> This is a system-generated email. Please do not reply.</p>';
 
 function isEmailConfigured() {
   return Boolean(env.smtp.host && env.smtp.port && env.smtp.user && env.smtp.pass && env.smtp.from);
@@ -43,6 +45,8 @@ function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, temp
       '',
       'Please sign in and change your password after your first login.',
       '',
+      SYSTEM_GENERATED_EMAIL_NOTE,
+      '',
       `Regards,`,
       `${organisationName} Team`,
     ].join('\n'),
@@ -54,6 +58,7 @@ function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, temp
         <p><strong>Login Email:</strong> ${employeeEmail}</p>
         <p><strong>Temporary Password:</strong> ${tempPassword}</p>
         <p>Please sign in and change your password after your first login.</p>
+        ${SYSTEM_GENERATED_EMAIL_NOTE_HTML}
         <p>Regards,<br />${organisationName} Team</p>
       </div>
     `,
@@ -75,6 +80,8 @@ function buildPasswordResetOtpEmail({ organisationName, employeeName, otp, expir
       '',
       'If you did not request a password reset, you can ignore this email.',
       '',
+      SYSTEM_GENERATED_EMAIL_NOTE,
+      '',
       `Regards,`,
       `${organisationName} Team`,
     ].join('\n'),
@@ -89,6 +96,7 @@ function buildPasswordResetOtpEmail({ organisationName, employeeName, otp, expir
         </p>
         <p>This code will expire in <strong>${expiresInMinutes} minutes</strong>.</p>
         <p>If you did not request a password reset, you can ignore this email.</p>
+        ${SYSTEM_GENERATED_EMAIL_NOTE_HTML}
         <p>Regards,<br />${organisationName} Team</p>
       </div>
     `,
@@ -142,6 +150,8 @@ function buildBillingAlertEmail({ organisationName, adminName, alertType, custom
       '',
       'If you need help, please contact the AttendEase support team.',
       '',
+      SYSTEM_GENERATED_EMAIL_NOTE,
+      '',
       'Regards,',
       'AttendEase Team',
     ].join('\n'),
@@ -151,6 +161,7 @@ function buildBillingAlertEmail({ organisationName, adminName, alertType, custom
         <p>${copy.heading}</p>
         <p>${detail}</p>
         <p>If you need help, please contact the AttendEase support team.</p>
+        ${SYSTEM_GENERATED_EMAIL_NOTE_HTML}
         <p>Regards,<br />AttendEase Team</p>
       </div>
     `,

@@ -1,7 +1,10 @@
 const { randomUUID } = require('crypto');
 const { redisClient } = require('../../config/redis');
 
-const CHALLENGES = ['blink', 'blink', 'blink', 'blink', 'turn_left', 'turn_right'];
+// Motion liveness challenges are disabled for now. Keep the server-issued token
+// as replay protection, but ask the app for a plain quality selfie.
+// const CHALLENGES = ['blink', 'blink', 'blink', 'blink', 'turn_left', 'turn_right'];
+const CHALLENGES = ['selfie'];
 const CHALLENGE_TTL_SECONDS = 180;
 
 function createError(code, message, statusCode, details = []) {
