@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const env = require('../../config/env');
 
 let transporter;
+const ATTENDEASE_APP_DOWNLOAD_URL = 'https://expo.dev/accounts/jitendra7080/projects/attendease/builds/4b2283b1-fd42-4eca-b485-bd44274fb633';
 const SYSTEM_GENERATED_EMAIL_NOTE = 'Note: This is a system-generated email. Please do not reply.';
 const SYSTEM_GENERATED_EMAIL_NOTE_HTML = '<p style="margin-top: 24px; color: #6b7280; font-size: 13px;"><strong>Note:</strong> This is a system-generated email. Please do not reply.</p>';
 
@@ -43,6 +44,19 @@ function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, temp
       `Login Email: ${employeeEmail}`,
       `Temporary Password: ${tempPassword}`,
       '',
+      'Install the AttendEase mobile app:',
+      ATTENDEASE_APP_DOWNLOAD_URL,
+      '',
+      'Android install guide:',
+      '1. Open the link on your Android phone.',
+      '2. Download the APK/build file.',
+      '3. If Android blocks the install, tap Settings when prompted.',
+      '4. Enable "Install unknown apps" or "Allow from this source" for your browser or file manager.',
+      '5. Go back and install the app.',
+      '6. Open AttendEase and log in using the email and temporary password above.',
+      '',
+      'If you do not see the install option, check your Downloads folder and open the downloaded file from there.',
+      '',
       'Please sign in and change your password after your first login.',
       '',
       SYSTEM_GENERATED_EMAIL_NOTE,
@@ -57,6 +71,26 @@ function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, temp
         <p><strong>Organisation:</strong> ${organisationName}</p>
         <p><strong>Login Email:</strong> ${employeeEmail}</p>
         <p><strong>Temporary Password:</strong> ${tempPassword}</p>
+        <div style="margin: 20px 0; padding: 16px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff;">
+          <p style="margin: 0 0 10px;"><strong>Install the AttendEase mobile app</strong></p>
+          <p style="margin: 0 0 12px;">
+            <a href="${ATTENDEASE_APP_DOWNLOAD_URL}" style="color: #1677ff;">
+              Download AttendEase app
+            </a>
+          </p>
+          <p style="margin: 0 0 8px;"><strong>Android install guide:</strong></p>
+          <ol style="margin: 0; padding-left: 20px;">
+            <li>Open the link on your Android phone.</li>
+            <li>Download the APK/build file.</li>
+            <li>If Android blocks the install, tap <strong>Settings</strong> when prompted.</li>
+            <li>Enable <strong>Install unknown apps</strong> or <strong>Allow from this source</strong> for your browser or file manager.</li>
+            <li>Go back and install the app.</li>
+            <li>Open AttendEase and log in using the email and temporary password above.</li>
+          </ol>
+          <p style="margin: 12px 0 0; color: #4b5563; font-size: 13px;">
+            If you do not see the install option, check your Downloads folder and open the downloaded file from there.
+          </p>
+        </div>
         <p>Please sign in and change your password after your first login.</p>
         ${SYSTEM_GENERATED_EMAIL_NOTE_HTML}
         <p>Regards,<br />${organisationName} Team</p>

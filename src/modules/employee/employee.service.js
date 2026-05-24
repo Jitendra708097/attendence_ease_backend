@@ -474,6 +474,13 @@ async function resendInvite(orgId, organisation, id) {
 }
 
 async function updateEmployee(orgId, id, payload) {
+  if (payload.role === 'superadmin') {
+    const error = new Error('Invalid employee role');
+    error.code = 'EMP_002';
+    error.statusCode = 400;
+    throw error;
+  }
+
   const employee = await Employee.findOne({
     where: getTenantEmployeeWhere(orgId, { id }),
   });
