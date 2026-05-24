@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Attendance, Branch, Department, Employee, Shift } = require('../../models');
+const { Attendance, Branch, Department, Designation, Employee, Shift } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 
 function createError(code, message, statusCode, details = []) {
@@ -27,6 +27,8 @@ function mapEmployee(employee) {
     email: employee.email,
     phone: employee.phone,
     role: employee.role,
+    designationId: employee.designation_id,
+    designationName: employee.designation ? employee.designation.name : null,
     status: employee.is_active ? 'active' : 'inactive',
     branchName: employee.branch ? employee.branch.name : null,
     shiftName: employee.shift ? employee.shift.name : null,
@@ -319,9 +321,10 @@ async function listDepartmentEmployees(orgId, id) {
       org_id: orgId,
       department_id: id,
     },
-    attributes: ['id', 'name', 'emp_code', 'email', 'phone', 'role', 'is_active', 'is_face_enrolled'],
+    attributes: ['id', 'name', 'emp_code', 'email', 'phone', 'role', 'designation_id', 'is_active', 'is_face_enrolled'],
     include: [
       { model: Branch, as: 'branch', attributes: ['id', 'name'], required: false },
+      { model: Designation, as: 'designation', attributes: ['id', 'name'], required: false },
       { model: Shift, as: 'shift', attributes: ['id', 'name'], required: false },
     ],
     order: [['name', 'ASC']],

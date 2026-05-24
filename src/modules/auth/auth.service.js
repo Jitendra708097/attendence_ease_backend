@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { Branch, Department, Employee, ImpersonationSession, RefreshToken, Organisation, Shift } = require('../../models');
+const { Branch, Department, Designation, Employee, ImpersonationSession, RefreshToken, Organisation, Shift } = require('../../models');
 const { compareValue, hashValue, signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/auth');
 const { isEmailConfigured, sendPasswordResetOtpEmail } = require('../notification/email.service');
 const { redisClient } = require('../../config/redis');
@@ -27,6 +27,8 @@ function buildEmployeeProfile(employee) {
     branchId: employee.branch_id || null,
     employeeCode: employee.emp_code || null,
     department: employee.department?.name || null,
+    designationId: employee.designation_id || null,
+    designationName: employee.designation?.name || null,
     shiftName: employee.shift?.name || null,
     branchName: employee.branch?.name || null,
     joinedAt: employee.created_at || null,
@@ -98,6 +100,7 @@ async function login({ email, password, deviceId }) {
       'email',
       'phone',
       'role',
+      'designation_id',
       'emp_code',
       'password_hash',
       'password_changed',
@@ -128,6 +131,12 @@ async function login({ email, password, deviceId }) {
       {
         model: Department,
         as: 'department',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+      {
+        model: Designation,
+        as: 'designation',
         attributes: ['id', 'name'],
         required: false,
       },
@@ -274,6 +283,12 @@ async function refresh(refreshToken) {
       {
         model: Department,
         as: 'department',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+      {
+        model: Designation,
+        as: 'designation',
         attributes: ['id', 'name'],
         required: false,
       },

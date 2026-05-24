@@ -1,4 +1,4 @@
-const { Attendance, Branch, Department, Employee } = require('../../models');
+const { Attendance, Branch, Department, Designation, Employee } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence.service');
 const { notifyOrgRoles } = require('../notification/notification.service');
@@ -191,11 +191,17 @@ async function listBranchEmployees(orgId, id) {
       org_id: orgId,
       branch_id: id,
     },
-    attributes: ['id', 'emp_code', 'name', 'email', 'phone', 'role', 'is_active', 'is_face_enrolled'],
+    attributes: ['id', 'emp_code', 'name', 'email', 'phone', 'role', 'is_active', 'is_face_enrolled', 'designation_id'],
     include: [
       {
         model: Department,
         as: 'department',
+        attributes: ['id', 'name'],
+        required: false,
+      },
+      {
+        model: Designation,
+        as: 'designation',
         attributes: ['id', 'name'],
         required: false,
       },
@@ -211,6 +217,8 @@ async function listBranchEmployees(orgId, id) {
       email: employee.email,
       phone: employee.phone,
       role: employee.role,
+      designationId: employee.designation_id,
+      designationName: employee.designation ? employee.designation.name : null,
       status: employee.is_active ? 'active' : 'inactive',
       isFaceEnrolled: Boolean(employee.is_face_enrolled),
       department: employee.department

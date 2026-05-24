@@ -1,4 +1,4 @@
-const { Department, Employee, Shift } = require('../../models');
+const { Department, Designation, Employee, Shift } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { notifyOrgRoles } = require('../notification/notification.service');
 
@@ -91,9 +91,10 @@ async function listShiftEmployees(orgId, id) {
       org_id: orgId,
       shift_id: id,
     },
-    attributes: ['id', 'name', 'email', 'emp_code', 'role', 'is_active', 'branch_id', 'department_id'],
+    attributes: ['id', 'name', 'email', 'emp_code', 'role', 'designation_id', 'is_active', 'branch_id', 'department_id'],
     include: [
       { model: Department, as: 'department', attributes: ['id', 'name'], required: false },
+      { model: Designation, as: 'designation', attributes: ['id', 'name'], required: false },
     ],
     order: [['name', 'ASC']],
   });
@@ -105,6 +106,8 @@ async function listShiftEmployees(orgId, id) {
       email: employee.email,
       empCode: employee.emp_code,
       role: employee.role,
+      designationId: employee.designation_id,
+      designationName: employee.designation ? employee.designation.name : null,
       status: employee.is_active ? 'active' : 'inactive',
       departmentId: employee.department_id,
       departmentName: employee.department ? employee.department.name : null,

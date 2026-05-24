@@ -66,6 +66,10 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'org_id',
       as: 'employees',
     });
+    Organisation.hasMany(models.Designation, {
+      foreignKey: 'org_id',
+      as: 'designations',
+    });
     Organisation.belongsTo(models.PlanDefinition, {
       foreignKey: 'plan_definition_id',
       as: 'planDefinition',

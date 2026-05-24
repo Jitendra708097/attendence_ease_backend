@@ -1,12 +1,13 @@
 const crypto = require('crypto');
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
-const { Employee, Branch, Department, Shift, Attendance } = require('../../models');
+const { Employee, Branch, Department, Shift, Attendance, Designation } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { getPagingData } = require('../../utils/pagination');
 const { hashValue } = require('../../utils/auth');
 const { notification } = require('../../queues');
 const planService = require('../plan/plan.service');
+const designationService = require('../designation/designation.service');
 
 const BULK_UPLOAD_MAX_ROWS = 500;
 const DEFAULT_NOTIFICATION_PREFERENCES = {
@@ -100,8 +101,19 @@ async function resolveEmployeeReferences(orgId, payload) {
   const branch = await findReferenceByIdOrName(Branch, orgId, payload.branchId, 'branch');
   const shift = await findReferenceByIdOrName(Shift, orgId, payload.shiftId, 'shift');
   const department = await findReferenceByIdOrName(Department, orgId, payload.departmentId, 'department', false);
+  const requiresDesignation = payload.requireDesignation !== false;
+  const designation = payload.designationId || payload.designationName || requiresDesignation
+    ? await designationService.findDesignationByIdOrName(
+      orgId,
+      {
+        designationId: payload.designationId,
+        designationName: payload.designationName,
+      },
+      { createIfMissing: Boolean(payload.designationName) }
+    )
+    : null;
 
-  if (!branch || !shift || (payload.departmentId && !department)) {
+  if (!branch || !shift || (requiresDesignation && !designation) || (payload.departmentId && !department)) {
     const error = new Error('Invalid employee references');
     error.code = 'EMP_002';
     error.statusCode = 400;
@@ -112,6 +124,7 @@ async function resolveEmployeeReferences(orgId, payload) {
     branch,
     shift,
     department,
+    designation,
   };
 }
 
@@ -122,6 +135,8 @@ function mapBulkUploadRow(row = {}) {
     phone: normalizeCellValue(row.phone) || null,
     branchId: normalizeCellValue(row.branch_id || row.branch_name || row.branch),
     departmentId: normalizeCellValue(row.department_id || row.department_name || row.department) || null,
+    designationId: normalizeCellValue(row.designation_id) || null,
+    designationName: normalizeCellValue(row.designation_name || row.designation || row.title),
     shiftId: normalizeCellValue(row.shift_id || row.shift_name || row.shift),
     role: normalizeCellValue(row.role || 'employee').toLowerCase() || 'employee',
     empCode: normalizeCellValue(row.emp_code) || null,
@@ -152,6 +167,8 @@ function mapEmployee(employee) {
     branchName: employee.branch?.name || null,
     departmentId: employee.department_id,
     departmentName: employee.department?.name || null,
+    designationId: employee.designation_id,
+    designationName: employee.designation?.name || null,
     shiftId: employee.shift_id,
     shiftName: employee.shift?.name || null,
     leaveBalance: employee.leave_balance || {},
@@ -277,6 +294,7 @@ async function listEmployees(orgId, query) {
     include: [
       { model: Branch, as: 'branch', attributes: ['id', 'name'] },
       { model: Department, as: 'department', attributes: ['id', 'name'], required: false },
+      { model: Designation, as: 'designation', attributes: ['id', 'name'], required: false },
       { model: Shift, as: 'shift', attributes: ['id', 'name'] },
     ],
     order: [['created_at', 'DESC']],
@@ -303,6 +321,7 @@ async function getEmployeeById(orgId, id) {
     include: [
       { model: Branch, as: 'branch', attributes: ['id', 'name'] },
       { model: Department, as: 'department', attributes: ['id', 'name'], required: false },
+      { model: Designation, as: 'designation', attributes: ['id', 'name'], required: false },
       { model: Shift, as: 'shift', attributes: ['id', 'name'] },
     ],
   });
@@ -326,7 +345,8 @@ async function createEmployee(orgId, organisation, payload) {
   }
 
   await planService.assertEmployeeLimit(orgId, 1);
-  if (payload.role === 'manager') {
+  const role = payload.role || 'employee';
+  if (role === 'manager') {
     await planService.assertManagerLimit(orgId, 1);
   }
 
@@ -339,12 +359,13 @@ async function createEmployee(orgId, organisation, payload) {
   const employee = await scopedModel(Employee, orgId).create({
     branch_id: references.branch.id,
     department_id: references.department ? references.department.id : null,
+    designation_id: references.designation.id,
     shift_id: references.shift.id,
     emp_code: empCode,
     name: payload.name,
     email: String(payload.email).trim().toLowerCase(),
     phone: payload.phone || null,
-    role: payload.role,
+    role,
     password_hash: passwordHash,
     temp_password: tempPassword,
     password_changed: false,
@@ -492,16 +513,20 @@ async function updateEmployee(orgId, id, payload) {
     throw error;
   }
 
-  if (payload.branchId || payload.shiftId || payload.departmentId) {
+  if (payload.branchId || payload.shiftId || payload.departmentId || payload.designationId || payload.designationName) {
     const references = await resolveEmployeeReferences(orgId, {
       branchId: payload.branchId || employee.branch_id,
       shiftId: payload.shiftId || employee.shift_id,
       departmentId: payload.departmentId || employee.department_id,
+      designationId: payload.designationId || employee.designation_id,
+      designationName: payload.designationName,
+      requireDesignation: Boolean(payload.designationId || payload.designationName || employee.designation_id),
     });
 
     payload.branchId = references.branch.id;
     payload.shiftId = references.shift.id;
     payload.departmentId = references.department ? references.department.id : null;
+    payload.designationId = references.designation.id;
   }
 
   await employee.update({
@@ -511,6 +536,7 @@ async function updateEmployee(orgId, id, payload) {
     role: payload.role ?? employee.role,
     branch_id: payload.branchId ?? employee.branch_id,
     department_id: payload.departmentId ?? employee.department_id,
+    designation_id: payload.designationId ?? employee.designation_id,
     shift_id: payload.shiftId ?? employee.shift_id,
     is_active: typeof payload.isActive === 'boolean' ? payload.isActive : employee.is_active,
   });

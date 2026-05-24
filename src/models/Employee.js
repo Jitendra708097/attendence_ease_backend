@@ -16,6 +16,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       department_id: DataTypes.UUID,
+      designation_id: DataTypes.UUID,
       shift_id: {
         type: DataTypes.UUID,
         allowNull: false,
@@ -98,6 +99,10 @@ module.exports = (sequelize, DataTypes) => {
     Employee.belongsTo(models.Department, {
       foreignKey: 'department_id',
       as: 'department',
+    });
+    Employee.belongsTo(models.Designation, {
+      foreignKey: 'designation_id',
+      as: 'designation',
     });
     Employee.belongsTo(models.Shift, {
       foreignKey: 'shift_id',
