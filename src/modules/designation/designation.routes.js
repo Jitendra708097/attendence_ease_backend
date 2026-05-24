@@ -12,6 +12,7 @@ router.use(authenticate, orgGuard);
 
 router.get('/', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(designationController.listDesignations));
 router.post('/', roleGuard('admin', 'superadmin'), blockImpersonatedWrites, asyncHandler(designationController.createDesignation));
+router.put('/:id', roleGuard('admin', 'superadmin'), blockImpersonatedWrites, asyncHandler(designationController.updateDesignation));
 router.delete('/:id', roleGuard('admin', 'superadmin'), blockImpersonatedWrites, asyncHandler(designationController.deleteDesignation));
 
 module.exports = router;

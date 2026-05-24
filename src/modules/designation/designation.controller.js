@@ -17,6 +17,16 @@ async function createDesignation(req, res) {
   }
 }
 
+async function updateDesignation(req, res) {
+  try {
+    const data = await designationService.updateDesignation(req.org_id, req.params.id, req.body);
+    await log(req.employee, 'designation.update', { type: 'designation', id: data.id }, null, data, req);
+    return ok(res, data, 'Designation updated');
+  } catch (error) {
+    return fail(res, error.code || 'DESIG_004', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function deleteDesignation(req, res) {
   try {
     await designationService.deleteDesignation(req.org_id, req.params.id);
@@ -30,5 +40,6 @@ async function deleteDesignation(req, res) {
 module.exports = {
   listDesignations,
   createDesignation,
+  updateDesignation,
   deleteDesignation,
 };

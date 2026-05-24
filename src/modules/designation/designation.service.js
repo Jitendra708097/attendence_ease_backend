@@ -90,6 +90,54 @@ async function createDesignation(orgId, payload = {}) {
   return mapDesignation(designation);
 }
 
+async function updateDesignation(orgId, id, payload = {}) {
+  const designation = await Designation.findOne({
+    where: {
+      org_id: orgId,
+      id,
+    },
+  });
+
+  if (!designation) {
+    const error = new Error('Designation not found');
+    error.code = 'HTTP_404';
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const name = payload.name === undefined ? designation.name : normalizeName(payload.name);
+
+  if (!name) {
+    const error = new Error('Designation name is required');
+    error.code = 'DESIG_002';
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const duplicate = await Designation.findOne({
+    where: {
+      org_id: orgId,
+      id: { [Op.ne]: id },
+      name: { [Op.iLike]: name },
+    },
+  });
+
+  if (duplicate) {
+    const error = new Error('A designation with this name already exists');
+    error.code = 'DESIG_004';
+    error.statusCode = 409;
+    throw error;
+  }
+
+  await designation.update({
+    name,
+    description: payload.description === undefined ? designation.description : payload.description || null,
+    is_active: typeof payload.isActive === 'boolean' ? payload.isActive : designation.is_active,
+  });
+
+  return mapDesignation(designation);
+}
+
 async function deleteDesignation(orgId, id) {
   const assignedCount = await Employee.count({
     where: {
@@ -126,5 +174,6 @@ module.exports = {
   findDesignationByIdOrName,
   listDesignations,
   createDesignation,
+  updateDesignation,
   deleteDesignation,
 };
