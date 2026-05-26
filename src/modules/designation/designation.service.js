@@ -6,11 +6,39 @@ function normalizeName(name) {
   return String(name || '').trim().replace(/\s+/g, ' ');
 }
 
-function mapDesignation(designation) {
+function normalizeCode(code) {
+  return String(code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+}
+
+function buildCodeFromName(name) {
+  return normalizeCode(name);
+}
+
+async function createUniqueCode(orgId, name) {
+  const baseCode = buildCodeFromName(name) || 'DESIGNATION';
+  let code = baseCode;
+  let suffix = 1;
+
+  while (await Designation.findOne({ where: { org_id: orgId, code: { [Op.iLike]: code } } })) {
+    suffix += 1;
+    code = `${baseCode.slice(0, Math.max(1, 40 - String(suffix).length - 1))}-${suffix}`;
+  }
+
+  return code;
+}
+
+function mapDesignation(designation, employeeCounts = {}) {
   return {
     id: designation.id,
     name: designation.name,
-    description: designation.description || null,
+    code: designation.code,
+    totalEmployees: Number(employeeCounts[designation.id] || 0),
     isActive: Boolean(designation.is_active),
   };
 }
@@ -45,6 +73,7 @@ async function findDesignationByIdOrName(orgId, { designationId, designationName
 
   return scopedModel(Designation, orgId).create({
     name: normalizedName,
+    code: await createUniqueCode(orgId, normalizedName),
     is_active: true,
   });
 }
@@ -54,9 +83,25 @@ async function listDesignations(orgId) {
     where: { org_id: orgId, is_active: true },
     order: [['name', 'ASC']],
   });
+  const counts = await Employee.findAll({
+    attributes: [
+      'designation_id',
+      [Employee.sequelize.fn('COUNT', Employee.sequelize.col('id')), 'totalEmployees'],
+    ],
+    where: {
+      org_id: orgId,
+      designation_id: { [Op.ne]: null },
+    },
+    group: ['designation_id'],
+    raw: true,
+  });
+  const employeeCounts = counts.reduce((accumulator, row) => {
+    accumulator[row.designation_id] = Number(row.totalEmployees || 0);
+    return accumulator;
+  }, {});
 
   return {
-    designations: designations.map(mapDesignation),
+    designations: designations.map((designation) => mapDesignation(designation, employeeCounts)),
   };
 }
 
@@ -70,10 +115,22 @@ async function createDesignation(orgId, payload = {}) {
     throw error;
   }
 
+  const code = payload.code ? normalizeCode(payload.code) : await createUniqueCode(orgId, name);
+
+  if (!code) {
+    const error = new Error('Designation code is required');
+    error.code = 'DESIG_005';
+    error.statusCode = 422;
+    throw error;
+  }
+
   const existing = await Designation.findOne({
     where: {
       org_id: orgId,
-      name: { [Op.iLike]: name },
+      [Op.or]: [
+        { name: { [Op.iLike]: name } },
+        { code: { [Op.iLike]: code } },
+      ],
     },
   });
 
@@ -83,7 +140,7 @@ async function createDesignation(orgId, payload = {}) {
 
   const designation = await scopedModel(Designation, orgId).create({
     name,
-    description: payload.description || null,
+    code,
     is_active: payload.isActive !== false,
   });
 
@@ -106,6 +163,7 @@ async function updateDesignation(orgId, id, payload = {}) {
   }
 
   const name = payload.name === undefined ? designation.name : normalizeName(payload.name);
+  const code = payload.code === undefined ? designation.code : normalizeCode(payload.code);
 
   if (!name) {
     const error = new Error('Designation name is required');
@@ -114,16 +172,26 @@ async function updateDesignation(orgId, id, payload = {}) {
     throw error;
   }
 
+  if (!code) {
+    const error = new Error('Designation code is required');
+    error.code = 'DESIG_005';
+    error.statusCode = 422;
+    throw error;
+  }
+
   const duplicate = await Designation.findOne({
     where: {
       org_id: orgId,
       id: { [Op.ne]: id },
-      name: { [Op.iLike]: name },
+      [Op.or]: [
+        { name: { [Op.iLike]: name } },
+        { code: { [Op.iLike]: code } },
+      ],
     },
   });
 
   if (duplicate) {
-    const error = new Error('A designation with this name already exists');
+    const error = new Error('A designation with this name or code already exists');
     error.code = 'DESIG_004';
     error.statusCode = 409;
     throw error;
@@ -131,7 +199,7 @@ async function updateDesignation(orgId, id, payload = {}) {
 
   await designation.update({
     name,
-    description: payload.description === undefined ? designation.description : payload.description || null,
+    code,
     is_active: typeof payload.isActive === 'boolean' ? payload.isActive : designation.is_active,
   });
 
