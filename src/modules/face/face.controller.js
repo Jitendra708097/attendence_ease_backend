@@ -2,25 +2,8 @@ const { ok, fail } = require('../../utils/response');
 const { log } = require('../../utils/auditLog');
 const faceService = require('./face.service');
 
-function validateEmbedding(embedding) {
-  if (embedding == null) {
-    return [];
-  }
-
-  if (!Array.isArray(embedding) || embedding.length !== 128) {
-    return [
-      {
-        field: 'faceEmbedding',
-        message: 'faceEmbedding must be a 128 length numeric array',
-      },
-    ];
-  }
-
-  return [];
-}
-
 async function enroll(req, res) {
-  const details = validateEmbedding(req.body.faceEmbedding);
+  const details = [];
 
   if (!req.body.selfieBase64) {
     details.push({
@@ -37,7 +20,6 @@ async function enroll(req, res) {
     const data = await faceService.enqueueEnrollment({
       orgId: req.org_id,
       empId: req.employee.id,
-      embedding: req.body.faceEmbedding || null,
       selfieBase64: req.body.selfieBase64,
     });
 
@@ -61,7 +43,14 @@ async function enroll(req, res) {
 }
 
 async function verify(req, res) {
-  const details = validateEmbedding(req.body.faceEmbedding);
+  const details = [];
+
+  if (!req.body.selfieBase64) {
+    details.push({
+      field: 'selfieBase64',
+      message: 'selfieBase64 is required',
+    });
+  }
 
   if (details.length > 0) {
     return fail(res, 'FACE_002', 'Invalid face verification payload', details, 422);
@@ -72,7 +61,6 @@ async function verify(req, res) {
     const data = await faceService.verifyFace(
       req.employee.id,  // Use authenticated employee
       req.org_id,       // Use org from middleware
-      req.body.faceEmbedding || null,
       faceService.decodeSelfie(req.body.selfieBase64)
     );
 

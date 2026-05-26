@@ -55,11 +55,7 @@ function percent(value, total) {
 }
 
 function isEmployeeFaceEnrolled(employee) {
-  return Boolean(
-    employee.is_face_enrolled ||
-      employee.face_embedding_id ||
-      (Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length > 0)
-  );
+  return Boolean(employee.face_embedding_id);
 }
 
 function incrementStatus(target, attendance) {
@@ -334,7 +330,6 @@ async function getAdminSummary(orgId) {
         'shift_id',
         'is_face_enrolled',
         'face_embedding_id',
-        'face_embedding_local',
       ],
     }),
     Branch.findAll({ where: { org_id: orgId }, attributes: ['id', 'name', 'geo_fence_polygons', 'is_remote'] }),

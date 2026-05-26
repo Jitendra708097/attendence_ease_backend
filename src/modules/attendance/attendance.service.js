@@ -10,12 +10,8 @@ const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence
 const faceService = require('../face/face.service');
 const { uploadAttendanceSelfie } = require('../face/face.storageService');
 const { getUndoExpiryJobId } = require('../../queues/workers/checkoutGrace.worker');
-const { compareEmbeddings, isValidEmbedding, normalizeEmbedding } = require('../face/face.localModel');
-const { generateFaceEmbedding } = require('../face/face.tensorflowService');
 const { searchFacesByImage } = require('../face/face.cloudService');
 
-const KIOSK_LOCAL_THRESHOLD = 0.92;
-const KIOSK_AMBIGUOUS_MARGIN = 0.04;
 const KIOSK_REKOGNITION_THRESHOLD = 97;
 
 function createError(code, message, statusCode, details = []) {
@@ -496,7 +492,7 @@ function normalizeFaceMatch(result) {
   }
 
   const provider = String(result.source || '').toLowerCase();
-  const source = provider === 'rekognition' ? 'aws' : 'local';
+  const source = provider === 'rekognition' || provider === 'dedup_cache' ? 'aws' : provider || null;
   const rawScore =
     typeof result.score === 'number' && Number.isFinite(result.score)
       ? result.score
@@ -812,125 +808,9 @@ async function validateVelocity({ orgId, empId, lat, lng, timestamp = new Date()
   }
 }
 
-async function resolveKioskEmbedding(faceEmbedding, selfieBuffer) {
-  const normalized = Array.isArray(faceEmbedding) ? normalizeEmbedding(faceEmbedding) : null;
-
-  if (normalized && isValidEmbedding(normalized)) {
-    return normalized;
-  }
-
-  if (Buffer.isBuffer(selfieBuffer)) {
-    try {
-      const generated = await generateFaceEmbedding(selfieBuffer);
-      const generatedEmbedding = normalizeEmbedding(generated.embedding);
-      return isValidEmbedding(generatedEmbedding) ? generatedEmbedding : null;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-async function identifyEmployeeByFace({ orgId, faceEmbedding, selfieBuffer }) {
-  const cloudSearchFirst = await searchFacesByImage(selfieBuffer, {
-    threshold: KIOSK_REKOGNITION_THRESHOLD,
-    maxFaces: 5,
-  });
-
-  if (cloudSearchFirst.matches.length > 0) {
-    const faceIds = cloudSearchFirst.matches.map((match) => match.faceId);
-    const employees = await Employee.findAll({
-      where: {
-        org_id: orgId,
-        is_active: true,
-        is_face_enrolled: true,
-        face_embedding_id: { [Op.in]: faceIds },
-      },
-      attributes: ['id', 'org_id', 'branch_id', 'shift_id', 'name', 'emp_code', 'face_embedding_id'],
-    });
-    const employeeByFaceId = employees.reduce((accumulator, employee) => {
-      accumulator[employee.face_embedding_id] = employee;
-      return accumulator;
-    }, {});
-    const rankedOrgMatches = cloudSearchFirst.matches
-      .map((match) => ({
-        ...match,
-        employee: employeeByFaceId[match.faceId],
-      }))
-      .filter((match) => match.employee)
-      .sort((left, right) => right.similarity - left.similarity);
-    const best = rankedOrgMatches[0];
-    const second = rankedOrgMatches[1];
-
-    if (best && best.similarity >= KIOSK_REKOGNITION_THRESHOLD) {
-      if (second && best.similarity - second.similarity < 2) {
-        throw createError('FACE_007', 'Face match is ambiguous. Please try again.', 409);
-      }
-
-      return {
-        employee: best.employee,
-        match: {
-          score: Number((best.similarity / 100).toFixed(3)),
-          confidence: best.similarity,
-          source: 'aws',
-          threshold: KIOSK_REKOGNITION_THRESHOLD,
-        },
-      };
-    }
-  }
-
-  const searchableEmbedding = await resolveKioskEmbedding(faceEmbedding, selfieBuffer);
-
-  if (searchableEmbedding) {
-    const employees = await Employee.findAll({
-      where: {
-        org_id: orgId,
-        is_active: true,
-        is_face_enrolled: true,
-      },
-      attributes: [
-        'id',
-        'org_id',
-        'branch_id',
-        'shift_id',
-        'name',
-        'emp_code',
-        'face_embedding_local',
-        'face_embedding_id',
-      ],
-    });
-
-    const rankedMatches = employees
-      .filter((employee) => Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128)
-      .map((employee) => {
-        const result = compareEmbeddings(searchableEmbedding, employee.face_embedding_local);
-        return {
-          employee,
-          score: result.score,
-          source: 'local',
-        };
-      })
-      .filter((match) => Number.isFinite(match.score))
-      .sort((left, right) => right.score - left.score);
-
-    const best = rankedMatches[0];
-    const second = rankedMatches[1];
-
-    if (best && best.score >= KIOSK_LOCAL_THRESHOLD) {
-      if (second && best.score - second.score < KIOSK_AMBIGUOUS_MARGIN) {
-        throw createError('FACE_007', 'Face match is ambiguous. Please try again.', 409);
-      }
-
-      return {
-        employee: best.employee,
-        match: {
-          score: Number(best.score.toFixed(3)),
-          source: best.source,
-          threshold: KIOSK_LOCAL_THRESHOLD,
-        },
-      };
-    }
+async function identifyEmployeeByFace({ orgId, selfieBuffer }) {
+  if (!Buffer.isBuffer(selfieBuffer)) {
+    throw createError('FACE_002', 'Kiosk scan requires a selfie image', 422);
   }
 
   const cloudSearch = await searchFacesByImage(selfieBuffer, {
@@ -1223,7 +1103,7 @@ async function checkIn({ orgId, empId, body, req }) {
     await validateVelocity({ orgId, empId, lat: Number(body.lat), lng: Number(body.lng), timestamp: new Date() });
     const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'attendance check-in');
 
-    const faceVerification = await faceService.verifyFace( empId, orgId, body.faceEmbedding || null, selfieBuffer );
+    const faceVerification = await faceService.verifyFace(empId, orgId, selfieBuffer);
     const { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
 
   const existingAttendance = await getTodayAttendance(orgId, empId, timezone);
@@ -1368,7 +1248,6 @@ async function checkOut({ orgId, empId, body, req }) {
   const faceVerification = await faceService.verifyFace(
     empId,
     orgId,
-    body.faceEmbedding || null,
     checkoutSelfieBuffer
   );
   let { faceMatchScore, faceMatchSource } = normalizeFaceMatch(faceVerification);
@@ -1813,7 +1692,6 @@ async function kioskScan({ orgId, hostEmpId, body, req }) {
   const selfieBuffer = requireSelfieBuffer(body.selfieBase64, 'kiosk attendance');
   const { employee: matchedEmployee, match } = await identifyEmployeeByFace({
     orgId,
-    faceEmbedding: body.faceEmbedding || null,
     selfieBuffer,
   });
 
@@ -1925,11 +1803,10 @@ async function syncOffline({ orgId, empId, body, req }) {
       await validateVelocity({ orgId, empId, lat, lng, timestamp: capturedAt });
 
       const selfieBuffer = faceService.decodeSelfie(record.selfieBase64);
-      if (Array.isArray(record.faceEmbedding) || selfieBuffer) {
-        await faceService.verifyFace(empId, orgId, record.faceEmbedding || null, selfieBuffer);
-      } else if (Number(record.faceScore || 0) < 0.8) {
-        throw createError('FACE_MATCH_FAILED', 'Offline face score is below threshold', 401);
+      if (!selfieBuffer) {
+        throw createError('FACE_002', 'Offline sync requires a selfie image for AWS face verification', 422);
       }
+      await faceService.verifyFace(empId, orgId, selfieBuffer);
 
       const date = getDateStringInTimezone(capturedAt, timezone);
       const type = String(record.type || 'check_in').toLowerCase();

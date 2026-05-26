@@ -15,7 +15,7 @@ function getImpersonationHandoffKey(code) {
 
 function buildEmployeeProfile(employee) {
   const requiresPasswordChange = typeof employee.password_changed === 'boolean' ? !employee.password_changed : false;
-  const faceEnrolled = Boolean(employee.face_embedding_id || employee.face_embedding_local);
+  const faceEnrolled = Boolean(employee.face_embedding_id);
 
   return {
     id: employee.id,
@@ -105,7 +105,6 @@ async function login({ email, password, deviceId }) {
       'password_hash',
       'password_changed',
       'face_embedding_id',
-      'face_embedding_local',
       'registered_face_url',
       'created_at',
       'is_active',

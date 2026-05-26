@@ -153,8 +153,6 @@ async function generateEmpCode(orgId, orgSlug) {
 }
 
 function mapEmployee(employee) {
-  const hasLocalFaceEmbedding = Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length > 0;
-
   return {
     id: employee.id,
     name: employee.name,
@@ -172,7 +170,7 @@ function mapEmployee(employee) {
     shiftId: employee.shift_id,
     shiftName: employee.shift?.name || null,
     leaveBalance: employee.leave_balance || {},
-    faceEnrolled: Boolean(employee.is_face_enrolled || employee.face_embedding_id || hasLocalFaceEmbedding),
+    faceEnrolled: Boolean(employee.face_embedding_id),
     registeredFaceUrl: employee.registered_face_url || null,
     requiresPasswordChange: !employee.password_changed,
     notificationPreferences: {
@@ -264,7 +262,6 @@ async function listEmployees(orgId, query) {
       ...(where[Op.and] || []),
       { [Op.or]: [{ is_face_enrolled: false }, { is_face_enrolled: null }] },
       { [Op.or]: [{ face_embedding_id: null }, { face_embedding_id: '' }] },
-      { face_embedding_local: null },
     ];
   }
 
@@ -275,7 +272,6 @@ async function listEmployees(orgId, query) {
         [Op.or]: [
           { is_face_enrolled: true },
           { face_embedding_id: { [Op.ne]: null } },
-          { face_embedding_local: { [Op.ne]: null } },
         ],
       },
     ];

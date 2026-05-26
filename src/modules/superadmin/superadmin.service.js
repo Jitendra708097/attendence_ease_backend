@@ -3087,7 +3087,7 @@ async function getAnalyticsUsage(query = {}) {
       paranoid: false,
     }),
     Employee.findAll({
-      attributes: ['face_embedding_local', 'face_embedding_id', 'is_active'],
+      attributes: ['face_embedding_id', 'is_active'],
       where: employeeWhere,
       paranoid: false,
     }),
@@ -3114,15 +3114,8 @@ async function getAnalyticsUsage(query = {}) {
     return acc;
   }, {});
 
-  const enrolledEmployees = employees.filter(
-    (employee) => Boolean(employee.face_embedding_id || employee.face_embedding_local)
-  );
-  const localCapableEmployees = enrolledEmployees.filter(
-    (employee) => Array.isArray(employee.face_embedding_local) && employee.face_embedding_local.length === 128
-  );
-  const localFacePercent = enrolledEmployees.length > 0
-    ? Math.round((localCapableEmployees.length / enrolledEmployees.length) * 100)
-    : null;
+  const enrolledEmployees = employees.filter((employee) => Boolean(employee.face_embedding_id));
+  const localFacePercent = enrolledEmployees.length > 0 ? 0 : null;
 
   return {
     groupBy,
