@@ -10,6 +10,4 @@ async function adminSummary(req, res) {
   }
 }
 
-module.exports = {
-  adminSummary,
-};
+module.exports = { adminSummary };

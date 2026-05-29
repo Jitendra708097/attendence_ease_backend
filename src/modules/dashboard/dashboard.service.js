@@ -337,6 +337,15 @@ async function getAdminSummary(orgId) {
     Shift.findAll({ where: { org_id: orgId }, attributes: ['id', 'name'] }),
     Attendance.findAll({
       where: { org_id: orgId, date: today },
+      include: [
+        {
+          model: Employee,
+          as: 'employee',
+          attributes: [],
+          required: true,
+          where: { is_active: true, role: { [Op.ne]: 'superadmin' } },
+        },
+      ],
       attributes: [
         'id',
         'emp_id',
@@ -354,6 +363,15 @@ async function getAdminSummary(orgId) {
         org_id: orgId,
         date: { [Op.between]: [trendDates[0], trendDates[trendDates.length - 1]] },
       },
+      include: [
+        {
+          model: Employee,
+          as: 'employee',
+          attributes: [],
+          required: true,
+          where: { is_active: true, role: { [Op.ne]: 'superadmin' } },
+        },
+      ],
       attributes: ['date', 'status', 'is_late'],
       order: [['date', 'ASC']],
     }),
@@ -425,6 +443,4 @@ async function getAdminSummary(orgId) {
   };
 }
 
-module.exports = {
-  getAdminSummary,
-};
+module.exports = { getAdminSummary };

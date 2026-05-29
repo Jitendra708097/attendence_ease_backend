@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const { Attendance, Branch, Department, Designation, Employee } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence.service');
@@ -233,6 +234,7 @@ async function listBranches(orgId) {
         model: Employee,
         as: 'employees',
         attributes: ['id'],
+        where: { role: { [Op.ne]: 'superadmin' } },
         required: false,
       },
     ],
@@ -255,6 +257,7 @@ async function getBranchById(orgId, id) {
         model: Employee,
         as: 'employees',
         attributes: ['id'],
+        where: { role: { [Op.ne]: 'superadmin' } },
         required: false,
       },
     ],
@@ -358,6 +361,7 @@ async function listBranchEmployees(orgId, id) {
     where: {
       org_id: orgId,
       branch_id: id,
+      role: { [Op.ne]: 'superadmin' },
     },
     attributes: ['id', 'emp_code', 'name', 'email', 'phone', 'role', 'is_active', 'is_face_enrolled', 'designation_id'],
     include: [
@@ -409,6 +413,7 @@ async function getBranchTodayStats(orgId, id) {
         org_id: orgId,
         branch_id: id,
         is_active: true,
+        role: { [Op.ne]: 'superadmin' },
       },
     }),
     Attendance.findAll({

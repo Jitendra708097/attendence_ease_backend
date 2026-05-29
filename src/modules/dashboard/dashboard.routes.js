@@ -9,10 +9,6 @@ const router = express.Router();
 
 router.use(authenticate, orgGuard);
 
-router.get(
-  '/admin-summary',
-  roleGuard('admin', 'manager', 'superadmin'),
-  asyncHandler(dashboardController.adminSummary)
-);
+router.get('/admin-summary', roleGuard('admin', 'manager', 'superadmin'),asyncHandler(dashboardController.adminSummary));
 
 module.exports = router;

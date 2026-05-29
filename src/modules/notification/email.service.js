@@ -31,7 +31,7 @@ function getTransporter() {
 }
 
 function buildWelcomeEmail({ organisationName, employeeName, employeeEmail, tempPassword }) {
-  const greeting = `Welcome to ${organisationName}. Your employee account has been created by the admin portal.`;
+  const greeting = `Welcome to ${organisationName}. Your employee account has been created by the admin.`;
 
   return {
     subject: `${organisationName} employee account details`,
