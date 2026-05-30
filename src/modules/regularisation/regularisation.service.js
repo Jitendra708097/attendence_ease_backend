@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { Op } = require('sequelize');
 const {
   Attendance,
@@ -8,6 +9,7 @@ const {
 } = require('../../models');
 const { computeAttendanceStatus } = require('../attendance/attendance.statusEngine');
 const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
+const { uploadRegularisationEvidence } = require('./regularisation.storageService');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -25,6 +27,45 @@ function normalizeEvidenceType(value) {
   }
 
   return 'other';
+}
+
+function parseEvidenceImage(body = {}) {
+  const rawBase64 = body.evidenceBase64 || body.evidence_base64 || body.evidenceImageBase64;
+
+  if (!rawBase64) {
+    return null;
+  }
+
+  const value = String(rawBase64).trim();
+  const dataUrlMatch = value.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  const mimeType = String(
+    body.evidenceMimeType ||
+    body.evidence_mime_type ||
+    (dataUrlMatch ? dataUrlMatch[1] : 'image/jpeg')
+  ).toLowerCase();
+  const base64 = dataUrlMatch ? dataUrlMatch[2] : value;
+
+  if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mimeType)) {
+    throw createError('REG_012', 'Regularisation evidence must be a JPG, PNG, or WebP image', 422, [
+      { field: 'evidenceBase64', message: 'Unsupported evidence image type' },
+    ]);
+  }
+
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(base64)) {
+    throw createError('REG_013', 'Regularisation evidence image is invalid', 422, [
+      { field: 'evidenceBase64', message: 'Invalid base64 image data' },
+    ]);
+  }
+
+  const buffer = Buffer.from(base64, 'base64');
+
+  if (!buffer.length || buffer.length > 4 * 1024 * 1024) {
+    throw createError('REG_014', 'Regularisation evidence image must be less than 4 MB', 422, [
+      { field: 'evidenceBase64', message: 'Upload a smaller evidence image' },
+    ]);
+  }
+
+  return { buffer, mimeType };
 }
 
 function normalizeRequestedDateTime(date, timeOrDateTime) {
@@ -62,6 +103,11 @@ function diffMinutes(start, end) {
   return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
 }
 
+function normalizeNote(value) {
+  const note = String(value || '').trim();
+  return note || null;
+}
+
 function toDto(record) {
   const employeeName = record.employee ? record.employee.name : null;
   const attendance = record.attendance || null;
@@ -85,8 +131,11 @@ function toDto(record) {
     level: currentLevel,
     managerApprovedBy: record.manager_approved_by,
     managerApprovedAt: record.manager_approved_at,
+    managerNotes: record.manager_notes,
     finalApprovedBy: record.final_approved_by,
     finalApprovedAt: record.final_approved_at,
+    finalNotes: record.final_notes,
+    approvalNotes: [record.manager_notes, record.final_notes].filter(Boolean).join('\n\n') || null,
     rejectionReason: record.rejection_reason,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
@@ -154,11 +203,19 @@ async function createRegularisation({ orgId, empId, body }) {
     throw createError('REG_005', 'Provide at least one requested correction time', 422);
   }
 
-  const evidenceUrl = typeof body.evidenceUrl === 'string' && /^https?:\/\//i.test(body.evidenceUrl)
-    ? body.evidenceUrl.trim()
+  const evidenceImage = parseEvidenceImage(body);
+  const recordId = crypto.randomUUID();
+  const uploadedEvidence = evidenceImage
+    ? await uploadRegularisationEvidence(evidenceImage.buffer, orgId, empId, recordId)
     : null;
+  const evidenceUrl = uploadedEvidence
+    ? uploadedEvidence.secureUrl
+    : typeof body.evidenceUrl === 'string' && /^https?:\/\//i.test(body.evidenceUrl)
+      ? body.evidenceUrl.trim()
+      : null;
 
   const record = await Regularisation.create({
+    id: recordId,
     org_id: orgId,
     emp_id: empId,
     attendance_id: attendance.id,
@@ -166,7 +223,7 @@ async function createRegularisation({ orgId, empId, body }) {
     requested_check_in: requestedCheckIn,
     requested_check_out: requestedCheckOut,
     reason,
-    evidence_type: normalizeEvidenceType(body.evidenceType || body.evidence_type),
+    evidence_type: evidenceImage ? 'photo' : normalizeEvidenceType(body.evidenceType || body.evidence_type),
     evidence_url: evidenceUrl,
   });
 
@@ -313,7 +370,7 @@ async function notifyAdminsForApproval(orgId, excludeEmployeeId, employeeName, d
   );
 }
 
-async function managerApproveRegularisation({ orgId, regularisationId, approverId }) {
+async function managerApproveRegularisation({ orgId, regularisationId, approverId, notes = null }) {
   const record = await Regularisation.findOne({
     where: {
       id: regularisationId,
@@ -342,6 +399,7 @@ async function managerApproveRegularisation({ orgId, regularisationId, approverI
     status: 'manager_approved',
     manager_approved_by: approverId,
     manager_approved_at: new Date(),
+    manager_notes: normalizeNote(notes) || record.manager_notes,
   });
 
   await notifyAdminsForApproval(orgId, record.emp_id, record.employee && record.employee.name, record.date, record.id);
@@ -349,7 +407,7 @@ async function managerApproveRegularisation({ orgId, regularisationId, approverI
   return toDto(record);
 }
 
-async function approveRegularisation({ orgId, regularisationId, approverId }) {
+async function approveRegularisation({ orgId, regularisationId, approverId, notes = null }) {
   const record = await Regularisation.findOne({
     where: {
       id: regularisationId,
@@ -440,6 +498,7 @@ async function approveRegularisation({ orgId, regularisationId, approverId }) {
     status: 'approved',
     final_approved_by: approverId,
     final_approved_at: new Date(),
+    final_notes: normalizeNote(notes) || record.final_notes,
     rejection_reason: null,
   });
 

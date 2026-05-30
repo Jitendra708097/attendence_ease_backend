@@ -49,6 +49,7 @@ async function managerApprove(req, res) {
       orgId: req.org_id,
       regularisationId: req.params.id,
       approverId: req.employee.id,
+      notes: req.body.note || req.body.notes || null,
     });
     await log(req.employee, 'regularisation.manager_approve', { type: 'regularisation', id: data.id }, null, data, req);
     return ok(res, data, 'Regularisation request approved by manager');
@@ -63,6 +64,7 @@ async function approve(req, res) {
       orgId: req.org_id,
       regularisationId: req.params.id,
       approverId: req.employee.id,
+      notes: req.body.note || req.body.notes || null,
     });
     await log(req.employee, 'regularisation.approve', { type: 'regularisation', id: data.id }, null, data, req);
     return ok(res, data, 'Regularisation request approved');

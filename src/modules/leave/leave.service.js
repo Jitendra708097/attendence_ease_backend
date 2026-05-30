@@ -673,6 +673,14 @@ function buildLeaveInclude(query = {}) {
   ];
 }
 
+async function hydrateLeaveRequest(leaveId, orgId, transaction = null) {
+  return LeaveRequest.findOne({
+    where: { id: leaveId, org_id: orgId },
+    include: buildLeaveInclude(),
+    transaction,
+  });
+}
+
 async function listAdminLeaves(orgId, query = {}) {
   const limit = Math.min(Math.max(Number(query.limit || 20), 1), 100);
   const page = Math.max(Number(query.page || 1), 1);
@@ -1154,7 +1162,6 @@ async function approveLeave({ orgId, leaveId, approverId, notes = null }) {
   return sequelize.transaction(async (transaction) => {
     const leave = await LeaveRequest.findOne({
       where: { id: leaveId, org_id: orgId, status: { [Op.in]: ['pending', 'manager_approved'] } },
-      include: buildLeaveInclude(),
       lock: true,
       transaction,
     });
@@ -1168,6 +1175,7 @@ async function approveLeave({ orgId, leaveId, approverId, notes = null }) {
     }
 
     const approver = await getEmployeeForOrg(orgId, approverId);
+    leave.employee = await getEmployeeForOrg(orgId, leave.emp_id);
     const approvalMode = await assertApproverCanAct({ orgId, approver, leave, action: leave.status === 'pending' ? 'manager' : 'final' });
 
     if (approvalMode === 'manager' && leave.status === 'pending') {
@@ -1181,7 +1189,7 @@ async function approveLeave({ orgId, leaveId, approverId, notes = null }) {
         },
         { transaction }
       );
-      return mapLeaveRequest(leave);
+      return mapLeaveRequest(await hydrateLeaveRequest(leave.id, orgId, transaction));
     }
 
     const leaveType = leave.leaveTypeRecord || await getLeaveTypeRecord(orgId, leave.leave_type, transaction);
@@ -1234,7 +1242,7 @@ async function approveLeave({ orgId, leaveId, approverId, notes = null }) {
       data: { leave_id: leave.id },
     });
 
-    return mapLeaveRequest(leave);
+    return mapLeaveRequest(await hydrateLeaveRequest(leave.id, orgId, transaction));
   });
 }
 
@@ -1246,7 +1254,6 @@ async function rejectLeave({ orgId, leaveId, approverId, rejectionReason }) {
   return sequelize.transaction(async (transaction) => {
     const leave = await LeaveRequest.findOne({
       where: { id: leaveId, org_id: orgId, status: { [Op.in]: ['pending', 'manager_approved', 'cancellation_pending'] } },
-      include: buildLeaveInclude(),
       lock: true,
       transaction,
     });
@@ -1256,6 +1263,7 @@ async function rejectLeave({ orgId, leaveId, approverId, rejectionReason }) {
     }
 
     const approver = await getEmployeeForOrg(orgId, approverId);
+    leave.employee = await getEmployeeForOrg(orgId, leave.emp_id);
     await assertApproverCanAct({ orgId, approver, leave, action: 'reject' });
 
     if (leave.status === 'cancellation_pending') {
@@ -1269,7 +1277,7 @@ async function rejectLeave({ orgId, leaveId, approverId, rejectionReason }) {
         },
         { transaction }
       );
-      return mapLeaveRequest(leave);
+      return mapLeaveRequest(await hydrateLeaveRequest(leave.id, orgId, transaction));
     }
 
     await leave.update(
@@ -1290,7 +1298,7 @@ async function rejectLeave({ orgId, leaveId, approverId, rejectionReason }) {
       data: { leave_id: leave.id },
     });
 
-    return mapLeaveRequest(leave);
+    return mapLeaveRequest(await hydrateLeaveRequest(leave.id, orgId, transaction));
   });
 }
 
@@ -1298,7 +1306,6 @@ async function cancelLeave({ orgId, empId, leaveId, actorId = null, reason = nul
   return sequelize.transaction(async (transaction) => {
     const leave = await LeaveRequest.findOne({
       where: { id: leaveId, org_id: orgId, emp_id: empId, status: { [Op.in]: ['pending', 'approved'] } },
-      include: buildLeaveInclude(),
       lock: true,
       transaction,
     });
