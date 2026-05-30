@@ -727,6 +727,20 @@ function requireSelfieBuffer(selfieBase64, actionLabel) {
   return selfieBuffer;
 }
 
+function isTerminalOfflineSyncError(error) {
+  return [
+    'GEO_001',
+    'GEO_002',
+    'GEO_003',
+    'GEO_004',
+    'FACE_002',
+    'FACE_003',
+    'FACE_004',
+    'ATT_009',
+    'ATT_011',
+  ].includes(error.code);
+}
+
 async function validateLocationForBranch(branch, body) {
   validateGpsPayload(body);
 
@@ -1940,9 +1954,10 @@ async function syncOffline({ orgId, empId, body, req }) {
     } catch (error) {
       results.push({
         index,
-        status: 'error',
+        status: isTerminalOfflineSyncError(error) ? 'rejected' : 'error',
         code: error.code || 'ATT_SYNC_003',
         message: error.message,
+        retryable: !isTerminalOfflineSyncError(error),
       });
     }
   }
@@ -1951,6 +1966,7 @@ async function syncOffline({ orgId, empId, body, req }) {
     synced: results.filter((result) => result.status === 'synced').length,
     duplicates: results.filter((result) => result.status === 'duplicate').length,
     conflicts: results.filter((result) => result.status === 'conflict').length,
+    rejected: results.filter((result) => result.status === 'rejected').length,
     failed: results.filter((result) => result.status === 'error').length,
     results,
   };
