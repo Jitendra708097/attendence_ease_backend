@@ -495,10 +495,11 @@ async function startImpersonation(req, res) {
 
 async function endImpersonation(req, res) {
   try {
+    const body = req.body || {};
     const data = await superadminService.endImpersonation({
       superAdminId: req.employee.id,
-      sessionId: req.params.sessionId || req.body.sessionId || null,
-      endReason: req.body.endReason || 'manual_end',
+      sessionId: req.params.sessionId || body.sessionId || null,
+      endReason: body.endReason || 'manual_end',
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'] || null,
     });

@@ -34,6 +34,7 @@ const IMPERSONATION_TOKEN_TTL_SECONDS = 30 * 60;
 const IMPERSONATION_HANDOFF_TTL_SECONDS = 60;
 const IMPERSONATION_HANDOFF_KEY_PREFIX = 'impersonation_handoff:';
 const DASHBOARD_CACHE_TTL_SECONDS = 45;
+const AUDIT_EXPORT_WARN_THRESHOLD = 10000;
 let lastEventLoopLagMs = 0;
 
 setInterval(() => {
@@ -220,6 +221,10 @@ function getOrgMonthlyMrr(org, employeeCount) {
 }
 
 function formatAuditLogRecord(row, orgMap = {}, actorMap = {}) {
+  const targetName = row.entity_type && row.entity_id
+    ? `${row.entity_type}:${row.entity_id}`
+    : null;
+
   return {
     id: row.id,
     action: row.action,
@@ -229,6 +234,9 @@ function formatAuditLogRecord(row, orgMap = {}, actorMap = {}) {
     orgSlug: row.org_id && orgMap[row.org_id] ? orgMap[row.org_id].slug : null,
     performedByName: row.actor_id && actorMap[row.actor_id] ? actorMap[row.actor_id].name : null,
     performedByEmail: row.actor_id && actorMap[row.actor_id] ? actorMap[row.actor_id].email : null,
+    targetName,
+    targetEntityType: row.entity_type,
+    targetEntityId: row.entity_id,
     ipAddress: row.ip_address,
     impersonatedBy: row.impersonated_by,
     impersonationSessionId: row.impersonation_session_id,
@@ -2456,6 +2464,18 @@ async function getAuditLogById(id) {
 async function exportAuditLogs(query = {}) {
   const where = buildAuditLogWhere(query);
   const format = String(query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
+  const total = await AuditLog.count({ where });
+  const allowLargeExport = query.allowLargeExport === true || query.allowLargeExport === 'true';
+
+  if (total > AUDIT_EXPORT_WARN_THRESHOLD && !allowLargeExport) {
+    throw createError(
+      'SA_022_EXPORT_TOO_LARGE',
+      `Audit export has ${total} rows. Narrow filters or confirm large export.`,
+      413,
+      [{ total, threshold: AUDIT_EXPORT_WARN_THRESHOLD }]
+    );
+  }
+
   const result = await AuditLog.findAll({
     where,
     order: [['created_at', 'DESC']],
