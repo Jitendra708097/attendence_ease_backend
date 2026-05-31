@@ -85,6 +85,9 @@ router.post('/health/queues/:queue/retry-all', asyncHandler(superadminController
 router.get('/health/metrics', asyncHandler(superadminController.metrics));
 router.get('/health/database', asyncHandler(superadminController.databaseStatus));
 
+router.get('/feedback/summary', asyncHandler(superadminController.feedbackSummary));
+router.get('/feedback', asyncHandler(superadminController.feedback));
+
 router.get('/audit-logs/export', asyncHandler(superadminController.exportAuditLogs));
 router.get('/audit-logs/summary', asyncHandler(superadminController.auditLogSummary));
 router.get('/audit-logs/:id', asyncHandler(superadminController.auditLogById));

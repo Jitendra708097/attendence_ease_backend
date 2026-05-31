@@ -22,6 +22,7 @@ const shiftRoutes = require('./modules/shift/shift.routes');
 const superadminRoutes = require('./modules/superadmin/superadmin.routes');
 const billingRoutes = require('./modules/billing/billing.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
+const feedbackRoutes = require('./modules/feedback/feedback.routes');
 const requestId = require('./middleware/requestId');
 const requestMetrics = require('./middleware/requestMetrics');
 const notFound = require('./middleware/notFound');
@@ -93,6 +94,7 @@ app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/shifts', shiftRoutes);
 app.use('/api/v1/billing', billingRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/feedback', feedbackRoutes);
 app.use('/api/v1/superadmin', superadminRoutes);
 
 app.use(notFound);

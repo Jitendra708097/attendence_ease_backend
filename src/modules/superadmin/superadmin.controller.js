@@ -8,6 +8,7 @@ const {
 } = require('../../utils/authCookies');
 const { blacklistToken } = require('../../utils/jwtBlacklist');
 const superadminService = require('./superadmin.service');
+const feedbackService = require('../feedback/feedback.service');
 
 async function login(req, res) {
   try {
@@ -633,6 +634,24 @@ async function getFeatureFlagOrgs(req, res) {
   }
 }
 
+async function feedback(req, res) {
+  try {
+    const data = await feedbackService.listFeedback(req.query);
+    return ok(res, data, 'Feedback fetched');
+  } catch (error) {
+    return fail(res, error.code || 'FDB_003', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
+async function feedbackSummary(req, res) {
+  try {
+    const data = await feedbackService.getFeedbackSummary(req.query);
+    return ok(res, data, 'Feedback summary fetched');
+  } catch (error) {
+    return fail(res, error.code || 'FDB_004', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function listPlans(req, res) {
   try {
     const data = await superadminService.listPlans();
@@ -743,6 +762,8 @@ module.exports = {
   auditLogSummary,
   auditLogById,
   exportAuditLogs,
+  feedback,
+  feedbackSummary,
   getFeatureFlags,
   setGlobalFeatureFlag,
   setOrgFeatureFlagOverride,

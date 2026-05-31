@@ -116,6 +116,10 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'emp_id',
       as: 'attendances',
     });
+    Employee.hasMany(models.UserFeedback, {
+      foreignKey: 'emp_id',
+      as: 'feedback',
+    });
   };
 
   return Employee;
