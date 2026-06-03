@@ -1,7 +1,7 @@
+const { Op } = require('sequelize');
 const { Department, Designation, Employee, Shift } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { notifyOrgRoles } = require('../notification/notification.service');
-const { Op } = require('sequelize');
 
 function mapShift(shift) {
   const assignedEmployees = Array.isArray(shift.employees) ? shift.employees : [];
@@ -50,7 +50,7 @@ async function listShifts(orgId) {
         required: false,
         where: {
           role: { [Op.ne]: 'superadmin' },
-        }
+        },
       },
     ],
     order: [['created_at', 'DESC']],
@@ -66,7 +66,6 @@ async function getShiftById(orgId, id) {
     where: {
       id,
       org_id: orgId,
-      role: { [Op.ne]: 'superadmin' },
     },
     include: [
       {
@@ -74,6 +73,9 @@ async function getShiftById(orgId, id) {
         as: 'employees',
         attributes: ['id'],
         required: false,
+        where: {
+          role: { [Op.ne]: 'superadmin' },
+        },
       },
     ],
   });
@@ -95,7 +97,7 @@ async function listShiftEmployees(orgId, id) {
     where: {
       org_id: orgId,
       shift_id: id,
-      role: { [Op.ne] : 'superadmin'},
+      role: { [Op.ne]: 'superadmin' },
     },
     attributes: ['id', 'name', 'email', 'emp_code', 'role', 'designation_id', 'is_active', 'branch_id', 'department_id'],
     include: [
@@ -197,7 +199,6 @@ async function deleteShift(orgId, id) {
     where: {
       id,
       org_id: orgId,
-      role: { [Op.ne]: 'superadmin '},
     },
   });
 
@@ -212,6 +213,7 @@ async function deleteShift(orgId, id) {
     where: {
       org_id: orgId,
       shift_id: id,
+      role: { [Op.ne]: 'superadmin' },
     },
   });
 
