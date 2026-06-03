@@ -172,6 +172,7 @@ async function listDepartments(orgId) {
       attributes: ['id', 'department_id'],
       where: {
         is_active: true,
+        role: { [Op.ne]: 'superadmin' },
       },
     }),
   ]);
@@ -252,6 +253,7 @@ async function getDepartmentById(orgId, id) {
         org_id: orgId,
         department_id: id,
         is_active: true,
+        role: {[Op.ne]: 'superadmin' },
       },
     }),
     Department.count({
@@ -320,6 +322,7 @@ async function listDepartmentEmployees(orgId, id) {
     where: {
       org_id: orgId,
       department_id: id,
+      role: {[Op.ne]: 'superadmin' },
     },
     attributes: ['id', 'name', 'emp_code', 'email', 'phone', 'role', 'designation_id', 'is_active', 'is_face_enrolled'],
     include: [
@@ -346,6 +349,7 @@ async function getDepartmentStats(orgId, id) {
         org_id: orgId,
         department_id: id,
         is_active: true,
+        role: {[Op.ne]: 'superadmin' },
       },
     }),
     Department.count({
@@ -412,6 +416,7 @@ async function deleteDepartment(orgId, id) {
         org_id: orgId,
         department_id: id,
         is_active: true,
+        role: {[Op.ne]: 'superadmin' },
       },
     }),
   ]);

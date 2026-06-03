@@ -1,11 +1,6 @@
 const { ok, fail } = require('../../utils/response');
 const { log } = require('../../utils/auditLog');
-const {
-  clearAuthCookies,
-  getAccessTokenFromRequest,
-  getRefreshTokenFromRequest,
-  setAuthCookies,
-} = require('../../utils/authCookies');
+const { clearAuthCookies, getAccessTokenFromRequest, getRefreshTokenFromRequest, setAuthCookies } = require('../../utils/authCookies');
 const { blacklistToken } = require('../../utils/jwtBlacklist');
 const authService = require('./auth.service');
 const {
