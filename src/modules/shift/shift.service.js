@@ -95,7 +95,7 @@ async function listShiftEmployees(orgId, id) {
     where: {
       org_id: orgId,
       shift_id: id,
-      role: { [Op.ne] : 'superadmin '},
+      role: { [Op.ne] : 'superadmin'},
     },
     attributes: ['id', 'name', 'email', 'emp_code', 'role', 'designation_id', 'is_active', 'branch_id', 'department_id'],
     include: [
