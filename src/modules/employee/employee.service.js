@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
-const { Employee, Branch, Department, Shift, Attendance, Designation } = require('../../models');
+const { Employee, Branch, Department, Shift, Attendance, Designation, RefreshToken } = require('../../models');
 const { scopedModel } = require('../../utils/scopedModel');
 const { getPagingData } = require('../../utils/pagination');
 const { hashValue } = require('../../utils/auth');
@@ -144,12 +144,53 @@ function mapBulkUploadRow(row = {}) {
 }
 
 async function generateEmpCode(orgId, orgSlug) {
-  const count = await Employee.count({
+  let nextNumber = await Employee.count({
     where: getTenantEmployeeWhere(orgId),
-  });
+    paranoid: false,
+  }) + 1;
+  const prefix = buildEmpCodePrefix(orgSlug);
 
-  const nextNumber = String(count + 1).padStart(4, '0');
-  return `${buildEmpCodePrefix(orgSlug)}-${nextNumber}`;
+  while (true) {
+    const candidate = `${prefix}-${String(nextNumber).padStart(4, '0')}`;
+    const existingEmployee = await Employee.findOne({
+      where: {
+        org_id: orgId,
+        emp_code: candidate,
+      },
+      attributes: ['id'],
+      paranoid: false,
+    });
+
+    if (!existingEmployee) {
+      return candidate;
+    }
+
+    nextNumber += 1;
+  }
+}
+
+async function revokeEmployeeRefreshTokens(employeeIds = []) {
+  const ids = Array.from(new Set((Array.isArray(employeeIds) ? employeeIds : [employeeIds]).filter(Boolean)));
+
+  if (ids.length === 0) {
+    return 0;
+  }
+
+  const [revokedCount] = await RefreshToken.update(
+    { status: 'revoked' },
+    {
+      where: {
+        emp_id: {
+          [Op.in]: ids,
+        },
+        status: {
+          [Op.in]: ['active', 'used'],
+        },
+      },
+    }
+  );
+
+  return revokedCount;
 }
 
 function mapEmployee(employee) {
@@ -509,6 +550,9 @@ async function updateEmployee(orgId, id, payload) {
     throw error;
   }
 
+  const wasActive = Boolean(employee.is_active);
+  const nextIsActive = typeof payload.isActive === 'boolean' ? payload.isActive : employee.is_active;
+
   if (payload.branchId || payload.shiftId || payload.departmentId || payload.designationId || payload.designationName) {
     const references = await resolveEmployeeReferences(orgId, {
       branchId: payload.branchId || employee.branch_id,
@@ -534,8 +578,12 @@ async function updateEmployee(orgId, id, payload) {
     department_id: payload.departmentId ?? employee.department_id,
     designation_id: payload.designationId ?? employee.designation_id,
     shift_id: payload.shiftId ?? employee.shift_id,
-    is_active: typeof payload.isActive === 'boolean' ? payload.isActive : employee.is_active,
+    is_active: nextIsActive,
   });
+
+  if (wasActive && nextIsActive === false) {
+    await revokeEmployeeRefreshTokens(employee.id);
+  }
 
   return getEmployeeById(orgId, employee.id);
 }
@@ -552,6 +600,7 @@ async function deleteEmployee(orgId, id) {
     throw error;
   }
 
+  await revokeEmployeeRefreshTokens(employee.id);
   await employee.destroy();
   return true;
 }
@@ -584,6 +633,7 @@ async function deleteEmployees(orgId, ids = []) {
     throw error;
   }
 
+  await revokeEmployeeRefreshTokens(normalizedIds);
   await Employee.destroy({
     where: {
       org_id: orgId,

@@ -1,4 +1,4 @@
-const { ImpersonationSession } = require('../models');
+const { Employee, ImpersonationSession } = require('../models');
 const { unauthorized } = require('../utils/response');
 const { verifyAccessToken } = require('../utils/auth');
 const { getAccessTokenFromRequest } = require('../utils/authCookies');
@@ -62,11 +62,24 @@ async function authenticate(req, res, next) {
       await session.update({ last_seen_at: now });
     }
 
+    const employee = await Employee.findOne({
+      where: {
+        id: payload.id,
+        ...(payload.orgId ? { org_id: payload.orgId } : {}),
+        is_active: true,
+      },
+      attributes: ['id', 'org_id', 'role', 'branch_id'],
+    });
+
+    if (!employee) {
+      return unauthorized(res, 'AUTH_006', 'Account is suspended or deleted');
+    }
+
     req.employee = {
-      id: payload.id,
-      orgId: payload.orgId || null,
-      role: payload.role,
-      branch_id: payload.branchId || null,
+      id: employee.id,
+      orgId: employee.role === 'superadmin' ? null : employee.org_id,
+      role: employee.role,
+      branch_id: employee.branch_id || null,
       impersonatedBy: payload.impersonatedBy || null,
       isImpersonated: Boolean(payload.isImpersonated),
       impersonationSessionId: payload.impersonationSessionId || null,

@@ -265,6 +265,7 @@ async function refresh(refreshToken) {
   const employee = await Employee.findOne({
     where: {
       id: payload.id,
+      is_active: true,
       org_id: payload.orgId, // ✅ Always enforce org_id
     },
     include: [
