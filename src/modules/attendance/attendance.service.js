@@ -6,6 +6,7 @@ const { checkoutGrace, notification } = require('../../queues');
 const { log } = require('../../utils/auditLog');
 const { createChallenge, consumeChallenge, readChallenge } = require('./attendance.challengeService');
 const { computeAttendanceStatus } = require('./attendance.statusEngine');
+const { validateDevice } = require('./attendance.deviceValidator');
 const { checkGeofence, distanceToPolygonMeters } = require('../geofence/geofence.service');
 const faceService = require('../face/face.service');
 const { uploadAttendanceSelfie } = require('../face/face.storageService');
@@ -227,56 +228,6 @@ async function validateChallenge({ orgId, empId, challengeToken, captureTimestam
   if (!Number.isFinite(captureTime) || Math.abs(Date.now() - captureTime) > 180 * 1000) {
     throw createError('ATT_011', 'Capture timestamp is outside the allowed window', 401);
   }
-}
-
-async function validateDevice({ orgId, employee, deviceId, useDeviceException, exceptionId }) {
-  if (employee.registered_device_id && employee.registered_device_id === deviceId) {
-    return;
-  }
-
-  if (!employee.registered_device_id && deviceId) {
-    await employee.update({ registered_device_id: deviceId });
-    return;
-  }
-
-  if (useDeviceException && exceptionId) {
-    const [approvedUpdatedCount] = await DeviceException.update(
-      { status: 'used' },
-      {
-        where: {
-          id: exceptionId,
-          org_id: orgId,
-          emp_id: employee.id,
-          temp_device_id: deviceId,
-          status: 'approved',
-          expires_at: { [Op.gt]: new Date() },
-        },
-      }
-    );
-
-    if (approvedUpdatedCount) {
-      return;
-    }
-
-    const usedException = await DeviceException.findOne({
-      where: {
-        id: exceptionId,
-        org_id: orgId,
-        emp_id: employee.id,
-        temp_device_id: deviceId,
-        status: 'used',
-        expires_at: { [Op.gt]: new Date() },
-      },
-      attributes: ['id'],
-    });
-
-    if (!usedException) {
-      throw createError('AUTH_009', 'Device exception is invalid or expired', 401);
-    }
-    return;
-  }
-
-  throw createError('AUTH_009', 'This device is not registered for the employee', 401);
 }
 
 function validateGpsPayload(body) {

@@ -1,6 +1,10 @@
 const { Op } = require('sequelize');
-const { DeviceException, Employee } = require('../../models');
+const { DeviceException, Employee, Organisation } = require('../../models');
 const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
+const {
+  DEVICE_EXCEPTION_STATUSES,
+  isEmployeeDeviceExceptionFlowEnabled,
+} = require('./deviceException.policy');
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -26,6 +30,37 @@ function toDto(record) {
   };
 }
 
+function parsePagination(query = {}) {
+  const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 50, 1), 100);
+  return {
+    page,
+    limit,
+    offset: (page - 1) * limit,
+  };
+}
+
+function paginationMeta(count, page, limit) {
+  return {
+    page,
+    limit,
+    total: count,
+    count,
+    totalPages: Math.max(Math.ceil(count / limit), 1),
+  };
+}
+
+async function assertEmployeeDeviceExceptionFlowEnabled(orgId) {
+  const organisation = await Organisation.findOne({
+    where: { id: orgId },
+    attributes: ['settings'],
+  });
+
+  if (!isEmployeeDeviceExceptionFlowEnabled(organisation?.settings)) {
+    throw createError('DEV_008', 'Employee device exception requests are disabled for this organisation', 403);
+  }
+}
+
 async function createDeviceException({ orgId, empId, tempDeviceId, reason, approveNow = true, approvedBy }) {
   if (!empId || !tempDeviceId) {
     throw createError('DEV_001', 'Employee and temporary device id are required', 422, [
@@ -44,6 +79,10 @@ async function createDeviceException({ orgId, empId, tempDeviceId, reason, appro
 
   if (!employee) {
     throw createError('HTTP_404', 'Employee not found', 404);
+  }
+
+  if (!approveNow) {
+    await assertEmployeeDeviceExceptionFlowEnabled(orgId);
   }
 
   await DeviceException.update(
@@ -114,20 +153,25 @@ async function createDeviceException({ orgId, empId, tempDeviceId, reason, appro
 
 async function listDeviceExceptions({ orgId, query = {} }) {
   const where = { org_id: orgId };
+  const requestId = query.requestId || query.exceptionId || query.id;
+  const pagination = parsePagination(query);
+  const page = requestId ? 1 : pagination.page;
+  const limit = pagination.limit;
+  const offset = requestId ? 0 : pagination.offset;
 
-  if (query.requestId || query.exceptionId || query.id) {
-    where.id = query.requestId || query.exceptionId || query.id;
+  if (requestId) {
+    where.id = requestId;
   }
 
   if (query.empId) {
     where.emp_id = query.empId;
   }
 
-  if (query.status) {
+  if (DEVICE_EXCEPTION_STATUSES.includes(String(query.status || '').trim())) {
     where.status = query.status;
   }
 
-  const rows = await DeviceException.findAll({
+  const { rows, count } = await DeviceException.findAndCountAll({
     where,
     include: [
       {
@@ -137,11 +181,18 @@ async function listDeviceExceptions({ orgId, query = {} }) {
       },
     ],
     order: [['created_at', 'DESC']],
+    limit,
+    offset,
+    distinct: true,
   });
 
   return {
     exceptions: rows.map(toDto),
-    total: rows.length,
+    total: count,
+    page,
+    limit,
+    totalPages: Math.max(Math.ceil(count / limit), 1),
+    pagination: paginationMeta(count, page, limit),
   };
 }
 
@@ -151,7 +202,7 @@ async function listOwnDeviceExceptions({ orgId, empId }) {
       org_id: orgId,
       emp_id: empId,
       status: {
-        [Op.in]: ['pending', 'approved', 'used'],
+        [Op.in]: ['pending', 'approved', 'used', 'rejected'],
       },
     },
     order: [['created_at', 'DESC']],
@@ -224,7 +275,7 @@ async function rejectDeviceException({ orgId, id, approvedBy }) {
   }
 
   await exception.update({
-    status: 'expired',
+    status: 'rejected',
     approved_by: approvedBy,
     approved_at: new Date(),
     expires_at: new Date(),

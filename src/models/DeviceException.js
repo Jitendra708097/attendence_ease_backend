@@ -21,7 +21,7 @@ module.exports = (sequelize, DataTypes) => {
       },
       reason: DataTypes.TEXT,
       status: {
-        type: DataTypes.ENUM('pending', 'approved', 'used', 'expired'),
+        type: DataTypes.ENUM('pending', 'approved', 'used', 'expired', 'rejected'),
         defaultValue: 'pending',
       },
       expires_at: DataTypes.DATE,
