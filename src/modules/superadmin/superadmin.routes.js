@@ -14,6 +14,7 @@ router.use(authenticate, requireSuperadmin);
 router.post('/auth/logout', asyncHandler(superadminController.logout));
 router.get('/auth/me', asyncHandler(superadminController.me));
 
+// Organisation related stats routes 
 router.get('/orgs', asyncHandler(superadminController.listOrgs));
 router.get('/organisations', asyncHandler(superadminController.listOrgs));
 router.get('/organisations/export', asyncHandler(superadminController.exportOrgs));
@@ -41,6 +42,7 @@ router.put('/orgs/:orgId/plan', asyncHandler(superadminController.changePlan));
 router.put('/organisations/:orgId/plan', asyncHandler(superadminController.changePlan));
 router.put('/organisations/:orgId/trial', asyncHandler(superadminController.extendTrial));
 
+// Impersonation related routes 
 router.post('/impersonate/:orgId', asyncHandler(superadminController.startImpersonation));
 router.delete('/impersonate', asyncHandler(superadminController.endImpersonation));
 router.post('/impersonation/start', asyncHandler(superadminController.startImpersonation));
@@ -49,6 +51,7 @@ router.get('/impersonation/active', asyncHandler(superadminController.activeImpe
 router.get('/impersonation/history', asyncHandler(superadminController.impersonationHistory));
 router.get('/impersonation/:sessionId', asyncHandler(superadminController.impersonationDetail));
 
+// Stats related routes 
 router.get('/stats', asyncHandler(superadminController.stats));
 router.get('/analytics/dashboard', asyncHandler(superadminController.dashboard));
 router.get('/analytics/growth', asyncHandler(superadminController.analyticsGrowth));
@@ -59,6 +62,7 @@ router.get('/analytics/orgs/growth', asyncHandler(superadminController.growth));
 router.get('/analytics/alerts', asyncHandler(superadminController.alerts));
 router.get('/analytics/signups/recent', asyncHandler(superadminController.recentSignups));
 
+// Billing and Plan related routes 
 router.get('/billing/summary', asyncHandler(superadminController.revenueSummary));
 router.get('/billing/mrr', asyncHandler(superadminController.billingMrrHistory));
 router.get('/billing/plans', asyncHandler(superadminController.billingPlanBreakdown));
@@ -70,12 +74,14 @@ router.get('/plans', asyncHandler(superadminController.listPlans));
 router.post('/plans', asyncHandler(superadminController.upsertPlan));
 router.put('/plans/:code', asyncHandler(superadminController.upsertPlan));
 
+// Feature related routes 
 router.get('/feature-flags', asyncHandler(superadminController.getFeatureFlags));
 router.put('/feature-flags/:key/global', asyncHandler(superadminController.setGlobalFeatureFlag));
 router.put('/feature-flags/:key/orgs/:orgId', asyncHandler(superadminController.setOrgFeatureFlagOverride));
 router.delete('/feature-flags/:key/orgs/:orgId', asyncHandler(superadminController.removeOrgFeatureFlagOverride));
 router.get('/feature-flags/:key/orgs', asyncHandler(superadminController.getFeatureFlagOrgs));
 
+// Health related routes 
 router.get('/health', asyncHandler(superadminController.health));
 router.get('/health/queues', asyncHandler(superadminController.queues));
 router.get('/health/queues/failed', asyncHandler(superadminController.failedJobs));
@@ -85,9 +91,11 @@ router.post('/health/queues/:queue/retry-all', asyncHandler(superadminController
 router.get('/health/metrics', asyncHandler(superadminController.metrics));
 router.get('/health/database', asyncHandler(superadminController.databaseStatus));
 
+// Feedback related routes 
 router.get('/feedback/summary', asyncHandler(superadminController.feedbackSummary));
 router.get('/feedback', asyncHandler(superadminController.feedback));
 
+// Audit logs related routes 
 router.get('/audit-logs/export', asyncHandler(superadminController.exportAuditLogs));
 router.get('/audit-logs/summary', asyncHandler(superadminController.auditLogSummary));
 router.get('/audit-logs/:id', asyncHandler(superadminController.auditLogById));

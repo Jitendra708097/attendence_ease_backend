@@ -2,7 +2,8 @@ const nodemailer = require('nodemailer');
 const env = require('../../config/env');
 
 let transporter;
-const ATTENDEASE_APP_DOWNLOAD_URL = 'https://expo.dev/accounts/jitendra7080/projects/attendease/builds/4b2283b1-fd42-4eca-b485-bd44274fb633';
+const ATTENDEASE_APP_DOWNLOAD_URL =
+  "https://expo.dev/accounts/jitendra7080/projects/attendease/builds/27c13634-72ad-4919-a954-8a4f5376a2b7";
 const SYSTEM_GENERATED_EMAIL_NOTE = 'Note: This is a system-generated email. Please do not reply.';
 const SYSTEM_GENERATED_EMAIL_NOTE_HTML = '<p style="margin-top: 24px; color: #6b7280; font-size: 13px;"><strong>Note:</strong> This is a system-generated email. Please do not reply.</p>';
 

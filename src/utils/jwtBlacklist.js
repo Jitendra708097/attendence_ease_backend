@@ -19,11 +19,18 @@ function getTokenTtlSeconds(token) {
   return Math.max(decoded.exp - Math.floor(Date.now() / 1000), 0);
 }
 
+// blacklist the to put in redis database with TTL 
 async function blacklistToken(token) {
-  if (!token) return false;
+  if (!token)
+  {
+    return false;
+  }
 
   const ttlSeconds = getTokenTtlSeconds(token);
-  if (ttlSeconds <= 0) return false;
+  if (ttlSeconds <= 0)
+  {
+    return false;
+  }
 
   try {
     await redisClient.set(getBlacklistKey(token), '1', 'EX', ttlSeconds);
@@ -34,8 +41,12 @@ async function blacklistToken(token) {
   }
 }
 
+// check that token is present in redis or not or blacklistToken 
 async function isTokenBlacklisted(token) {
-  if (!token) return false;
+  if (!token)
+  {
+    return false;
+  }
 
   try {
     const value = await redisClient.get(getBlacklistKey(token));

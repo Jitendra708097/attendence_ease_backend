@@ -12,6 +12,7 @@
     "test": "node --test tests/*.test.js",
     "db:migrate": "sequelize-cli db:migrate",
     "db:seed:all": "sequelize-cli db:seed:all",
+    "regularisations:repair-times": "node scripts/repair-regularisation-times.js",
     "prod:start": "pm2-runtime src/server.js"
   },
   "dependencies": {

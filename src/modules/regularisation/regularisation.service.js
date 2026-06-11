@@ -10,6 +10,11 @@ const {
 const { computeAttendanceStatus } = require('../attendance/attendance.statusEngine');
 const { notifyOrgRoles, sendPush } = require('../notification/notification.service');
 const { uploadRegularisationEvidence } = require('./regularisation.storageService');
+const { assertValidDateString, buildCorrectedAttendanceTimes, normalizeRequestedLocalTime } = require('./regularisation.time');
+
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+const REGULARISATION_STATUSES = ['pending', 'manager_approved', 'approved', 'rejected'];
+const ATTENDANCE_RESTORE_ATTRIBUTES = [ 'id', 'date', 'shift_id', 'first_check_in', 'last_check_out', 'total_worked_minutes', 'status' ];
 
 function createError(code, message, statusCode, details = []) {
   const error = new Error(message);
@@ -68,44 +73,34 @@ function parseEvidenceImage(body = {}) {
   return { buffer, mimeType };
 }
 
-function normalizeRequestedDateTime(date, timeOrDateTime) {
-  if (!timeOrDateTime) {
-    return null;
-  }
-
-  if (timeOrDateTime instanceof Date) {
-    return timeOrDateTime;
-  }
-
-  const value = String(timeOrDateTime).trim();
-
-  if (!value) {
-    return null;
-  }
-
-  if (/^\d{2}:\d{2}$/.test(value)) {
-    return new Date(`${date}T${value}:00.000Z`);
-  }
-
-  if (/^\d{2}:\d{2}:\d{2}$/.test(value)) {
-    return new Date(`${date}T${value}.000Z`);
-  }
-
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function diffMinutes(start, end) {
-  if (!start || !end) {
-    return 0;
-  }
-
-  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
-}
-
 function normalizeNote(value) {
   const note = String(value || '').trim();
   return note || null;
+}
+
+function parsePagination(query = {}) {
+  const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 50, 1), 100);
+  return {
+    page,
+    limit,
+    offset: (page - 1) * limit,
+  };
+}
+
+function getPaginationMeta(count, page, limit) {
+  return {
+    page,
+    limit,
+    count,
+    total: count,
+    totalPages: Math.max(Math.ceil(count / limit), 1),
+  };
+}
+
+function normalizeStatusFilter(statusFilter) {
+  const status = String(statusFilter || '').trim();
+  return REGULARISATION_STATUSES.includes(status) ? status : null;
 }
 
 function toDto(record) {
@@ -146,9 +141,9 @@ async function createRegularisation({ orgId, empId, body }) {
   const date = String(body.date || '').trim();
   const reason = String(body.reason || '').trim();
 
-  if (!date || !reason) {
+  if (!date || !reason || !assertValidDateString(date)) {
     throw createError('REG_001', 'Date and reason are required', 422, [
-      { field: 'date', message: 'Date is required' },
+      { field: 'date', message: 'Use YYYY-MM-DD date format' },
       { field: 'reason', message: 'Reason is required' },
     ]);
   }
@@ -169,6 +164,17 @@ async function createRegularisation({ orgId, empId, body }) {
     throw createError('REG_006', 'This attendance status cannot be regularised', 400);
   }
 
+  const [shift, organisation] = await Promise.all([
+    Shift.findOne({ where: { id: attendance.shift_id, org_id: orgId } }),
+    Organisation.findOne({ where: { id: orgId }, attributes: ['timezone'] }),
+  ]);
+
+  if (!shift) {
+    throw createError('HTTP_404', 'Shift configuration not found', 404);
+  }
+
+  const timezone = organisation?.timezone || DEFAULT_TIMEZONE;
+
   const existing = await Regularisation.findOne({
     where: {
       org_id: orgId,
@@ -184,24 +190,46 @@ async function createRegularisation({ orgId, empId, body }) {
     throw createError('REG_002', 'A regularisation request is already pending for this attendance', 409);
   }
 
-  const requestedCheckIn = normalizeRequestedDateTime(date, body.requestedCheckIn || body.requested_check_in);
-  const requestedCheckOut = normalizeRequestedDateTime(date, body.requestedCheckOut || body.requested_check_out);
+  const requestedCheckInInput = body.requestedCheckIn ?? body.requested_check_in;
+  const requestedCheckOutInput = body.requestedCheckOut ?? body.requested_check_out;
+  const hasRequestedCheckIn = requestedCheckInInput !== undefined && requestedCheckInInput !== null && String(requestedCheckInInput).trim() !== '';
+  const hasRequestedCheckOut = requestedCheckOutInput !== undefined && requestedCheckOutInput !== null && String(requestedCheckOutInput).trim() !== '';
+  const requestedCheckIn = hasRequestedCheckIn
+    ? normalizeRequestedLocalTime({
+        date,
+        value: requestedCheckInInput,
+        timezone,
+        field: 'checkin',
+        shift,
+      })
+    : null;
+  const requestedCheckOut = hasRequestedCheckOut
+    ? normalizeRequestedLocalTime({
+        date,
+        value: requestedCheckOutInput,
+        timezone,
+        field: 'checkout',
+        shift,
+      })
+    : null;
 
-  if ((body.requestedCheckIn || body.requested_check_in) && !requestedCheckIn) {
+  if (hasRequestedCheckIn && !requestedCheckIn) {
     throw createError('REG_003', 'Invalid requested check-in time', 422, [
-      { field: 'requestedCheckIn', message: 'Use HH:MM or ISO datetime format' },
+      { field: 'requestedCheckIn', message: 'Use HH:MM or HH:MM:SS format' },
     ]);
   }
 
-  if ((body.requestedCheckOut || body.requested_check_out) && !requestedCheckOut) {
+  if (hasRequestedCheckOut && !requestedCheckOut) {
     throw createError('REG_004', 'Invalid requested check-out time', 422, [
-      { field: 'requestedCheckOut', message: 'Use HH:MM or ISO datetime format' },
+      { field: 'requestedCheckOut', message: 'Use HH:MM or HH:MM:SS format' },
     ]);
   }
 
   if (!requestedCheckIn && !requestedCheckOut) {
     throw createError('REG_005', 'Provide at least one requested correction time', 422);
   }
+
+  buildCorrectedAttendanceTimes({ attendance, requestedCheckIn, requestedCheckOut });
 
   const evidenceImage = parseEvidenceImage(body);
   const recordId = crypto.randomUUID();
@@ -302,7 +330,7 @@ async function listPendingRegularisations({ orgId, role, employeeId, query = {} 
       {
         model: Attendance,
         as: 'attendance',
-        attributes: ['id', 'first_check_in', 'last_check_out', 'status'],
+        attributes: ATTENDANCE_RESTORE_ATTRIBUTES,
       },
     ],
     order: [['created_at', 'DESC']],
@@ -314,10 +342,60 @@ async function listPendingRegularisations({ orgId, role, employeeId, query = {} 
   };
 }
 
-async function listMyRegularisations({ orgId, employeeId, query = {} }) {
-  const statusFilter = String(query.status || '').trim();
+async function listRegularisations({ orgId, query = {} }) {
+  const statusFilter = normalizeStatusFilter(query.status);
   const requestId = query.requestId || query.regularisationId || query.id;
-  const limit = Math.min(Number(query.limit) || 50, 100);
+  const pagination = parsePagination(query);
+  const page = requestId ? 1 : pagination.page;
+  const limit = pagination.limit;
+  const offset = requestId ? 0 : pagination.offset;
+  const where = {
+    org_id: orgId,
+  };
+
+  if (requestId) {
+    where.id = requestId;
+  } else if (statusFilter) {
+    where.status = statusFilter;
+  }
+
+  const { rows, count } = await Regularisation.findAndCountAll({
+    where,
+    include: [
+      {
+        model: Employee,
+        as: 'employee',
+        attributes: ['id', 'name', 'role'],
+      },
+      {
+        model: Attendance,
+        as: 'attendance',
+        attributes: ATTENDANCE_RESTORE_ATTRIBUTES,
+      },
+    ],
+    order: [['created_at', 'DESC']],
+    limit,
+    offset,
+    distinct: true,
+  });
+
+  return {
+    regularisations: rows.map(toDto),
+    total: count,
+    page,
+    limit,
+    totalPages: Math.max(Math.ceil(count / limit), 1),
+    pagination: getPaginationMeta(count, page, limit),
+  };
+}
+
+async function listMyRegularisations({ orgId, employeeId, query = {} }) {
+  const statusFilter = normalizeStatusFilter(query.status);
+  const requestId = query.requestId || query.regularisationId || query.id;
+  const pagination = parsePagination(query);
+  const page = requestId ? 1 : pagination.page;
+  const limit = pagination.limit;
+  const offset = requestId ? 0 : pagination.offset;
   const where = {
     org_id: orgId,
     emp_id: employeeId,
@@ -329,7 +407,7 @@ async function listMyRegularisations({ orgId, employeeId, query = {} }) {
     where.status = statusFilter;
   }
 
-  const rows = await Regularisation.findAll({
+  const { rows, count } = await Regularisation.findAndCountAll({
     where,
     include: [
       {
@@ -340,16 +418,22 @@ async function listMyRegularisations({ orgId, employeeId, query = {} }) {
       {
         model: Attendance,
         as: 'attendance',
-        attributes: ['id', 'first_check_in', 'last_check_out', 'status'],
+        attributes: ATTENDANCE_RESTORE_ATTRIBUTES,
       },
     ],
     order: [['created_at', 'DESC']],
     limit,
+    offset,
+    distinct: true,
   });
 
   return {
     regularisations: rows.map(toDto),
-    total: rows.length,
+    total: count,
+    page,
+    limit,
+    totalPages: Math.max(Math.ceil(count / limit), 1),
+    pagination: getPaginationMeta(count, page, limit),
   };
 }
 
@@ -457,29 +541,28 @@ async function approveRegularisation({ orgId, regularisationId, approverId, note
     attributes: ['timezone'],
   });
 
-  const nextCheckIn = record.requested_check_in || attendance.first_check_in;
-  const nextCheckOut = record.requested_check_out || attendance.last_check_out;
-  const totalWorkedMinutes = diffMinutes(
-    nextCheckIn ? new Date(nextCheckIn) : null,
-    nextCheckOut ? new Date(nextCheckOut) : null
-  );
+  const { nextCheckIn, nextCheckOut, totalWorkedMinutes } = buildCorrectedAttendanceTimes({
+    attendance,
+    requestedCheckIn: record.requested_check_in,
+    requestedCheckOut: record.requested_check_out,
+  });
 
   const statusState = computeAttendanceStatus(
     {
       date: attendance.date,
       first_check_in: nextCheckIn,
       last_check_out: nextCheckOut,
-      total_worked_minutes: totalWorkedMinutes || attendance.total_worked_minutes || 0,
+      total_worked_minutes: totalWorkedMinutes,
     },
     shift,
     null,
-    organisation.timezone || 'UTC'
+    organisation?.timezone || DEFAULT_TIMEZONE
   );
 
   await attendance.update({
     first_check_in: nextCheckIn,
     last_check_out: nextCheckOut,
-    total_worked_minutes: totalWorkedMinutes || attendance.total_worked_minutes || 0,
+    total_worked_minutes: totalWorkedMinutes,
     status: statusState.status,
     is_late: statusState.isLate,
     late_by_minutes: statusState.lateByMinutes || 0,
@@ -534,7 +617,7 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
       {
         model: Attendance,
         as: 'attendance',
-        attributes: ['id', 'first_check_in', 'last_check_out'],
+        attributes: ATTENDANCE_RESTORE_ATTRIBUTES,
       },
     ],
   });
@@ -565,12 +648,25 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
           },
           shift,
           null,
-          organisation?.timezone || 'UTC'
+          organisation?.timezone || DEFAULT_TIMEZONE
         )
       : null;
-    await record.attendance.update({
-      status: statusState ? statusState.status : record.attendance.last_check_out ? 'incomplete' : 'pending',
-    });
+    const restorePatch = statusState
+      ? {
+          status: statusState.status,
+          is_late: statusState.isLate,
+          late_by_minutes: statusState.lateByMinutes || 0,
+          is_overtime: statusState.isOvertime,
+          overtime_minutes: statusState.overtimeMinutes,
+          is_early_checkout: statusState.isEarlyCheckout,
+          early_by_minutes: statusState.earlyByMinutes || 0,
+          check_out_type: statusState.checkOutType,
+        }
+      : {
+          status: record.attendance.last_check_out ? 'incomplete' : 'pending',
+        };
+
+    await record.attendance.update(restorePatch);
   }
 
   await sendPush(
@@ -591,6 +687,7 @@ async function rejectRegularisation({ orgId, regularisationId, approverId, rejec
 
 module.exports = {
   createRegularisation,
+  listRegularisations,
   listPendingRegularisations,
   listMyRegularisations,
   managerApproveRegularisation,

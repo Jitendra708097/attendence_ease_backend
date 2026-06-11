@@ -306,9 +306,7 @@ function buildAuditLogWhere(query = {}) {
   }
 
   if (query.action) {
-    where.action = String(query.action).includes('%')
-      ? { [Op.iLike]: query.action }
-      : query.action;
+    where.action = String(query.action).includes('%') ? { [Op.iLike]: query.action } : query.action;
   }
 
   if (query.entityType) {

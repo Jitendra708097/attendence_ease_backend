@@ -10,6 +10,7 @@ const router = express.Router();
 router.use(authenticate, orgGuard);
 
 router.post('/', asyncHandler(regularisationController.create));
+router.get('/', roleGuard('admin', 'superadmin'), asyncHandler(regularisationController.list));
 router.get('/my', asyncHandler(regularisationController.mine));
 router.get('/pending', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(regularisationController.pending));
 router.put('/:id/manager-approve', roleGuard('manager', 'admin', 'superadmin'), asyncHandler(regularisationController.managerApprove));

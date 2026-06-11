@@ -44,25 +44,19 @@ function normalizePolygon(polygon = []) {
 }
 
 function isPointOnSegment(point, start, end) {
-  const crossProduct =
-    (point.lat - start.lat) * (end.lng - start.lng) -
-    (point.lng - start.lng) * (end.lat - start.lat);
+  const crossProduct = (point.lat - start.lat) * (end.lng - start.lng) - (point.lng - start.lng) * (end.lat - start.lat);
 
   if (Math.abs(crossProduct) > EDGE_TOLERANCE) {
     return false;
   }
 
-  const dotProduct =
-    (point.lng - start.lng) * (end.lng - start.lng) +
-    (point.lat - start.lat) * (end.lat - start.lat);
+  const dotProduct = (point.lng - start.lng) * (end.lng - start.lng) + (point.lat - start.lat) * (end.lat - start.lat);
 
   if (dotProduct < -EDGE_TOLERANCE) {
     return false;
   }
 
-  const squaredLength =
-    (end.lng - start.lng) * (end.lng - start.lng) +
-    (end.lat - start.lat) * (end.lat - start.lat);
+  const squaredLength = (end.lng - start.lng) * (end.lng - start.lng) + (end.lat - start.lat) * (end.lat - start.lat);
 
   return dotProduct <= squaredLength + EDGE_TOLERANCE;
 }

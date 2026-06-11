@@ -139,4 +139,6 @@ function computeAttendanceStatus(attendance, shift, leaveApprovals, timezone = '
 
 module.exports = {
   computeAttendanceStatus,
+  localDateTimeToUtc,
+  getDatePartsInTimezone,
 };
