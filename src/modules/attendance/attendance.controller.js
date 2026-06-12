@@ -106,6 +106,15 @@ async function history(req, res) {
   }
 }
 
+async function dayDetail(req, res) {
+  try {
+    const data = await attendanceService.getAttendanceDayDetail(req.org_id, req.employee.id, req.params.date);
+    return ok(res, data, 'Attendance detail fetched');
+  } catch (error) {
+    return fail(res, error.code || 'ATT_001', error.message, error.details || [], error.statusCode || 400);
+  }
+}
+
 async function getById(req, res) {
   try {
     const data = await attendanceService.getAttendanceById(req.org_id, req.params.id);
@@ -226,6 +235,7 @@ module.exports = {
   today,
   list,
   history,
+  dayDetail,
   exportCsv,
   getById,
   manual,

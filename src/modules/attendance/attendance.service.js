@@ -2449,6 +2449,7 @@ async function getAttendanceHistory(orgId, empId, query) {
     firstCheckIn: row.first_check_in,
     lastCheckOut: row.last_check_out,
     isLate: Boolean(row.is_late),
+    isAnomaly: Boolean(row.is_anomaly),
   }));
 
   const attendanceMap = records.reduce((accumulator, record) => {
@@ -2477,13 +2478,16 @@ async function getAttendanceHistory(orgId, empId, query) {
   };
 }
 
-async function getAttendanceById(orgId, id) {
-  const attendance = await Attendance.findOne({ where: { id, org_id: orgId } });
-  if (!attendance) {
-    throw createError('HTTP_404', 'Attendance record not found', 404);
+function isValidDateOnly(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) {
+    return false;
   }
 
-  const sessions = await getAttendanceSessions(attendance.id);
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function serializeAttendanceDetail(attendance, sessions) {
   return {
     id: attendance.id,
     date: attendance.date,
@@ -2492,6 +2496,17 @@ async function getAttendanceById(orgId, id) {
     sessionsToday: attendance.session_count || 0,
     firstCheckInTime: attendance.first_check_in,
     lastCheckOutTime: attendance.last_check_out,
+    isLate: Boolean(attendance.is_late),
+    lateByMinutes: attendance.late_by_minutes || 0,
+    isOvertime: Boolean(attendance.is_overtime),
+    overtimeMinutes: attendance.overtime_minutes || 0,
+    isEarlyCheckout: Boolean(attendance.is_early_checkout),
+    earlyByMinutes: attendance.early_by_minutes || 0,
+    isAnomaly: Boolean(attendance.is_anomaly),
+    isManual: Boolean(attendance.is_manual),
+    source: attendance.source || null,
+    faceMatchScore: toNumberOrNull(attendance.face_match_score),
+    faceMethod: attendance.face_match_source || null,
     sessions: sessions.map((session) => ({
       id: session.id,
       sessionNumber: session.session_number,
@@ -2508,6 +2523,37 @@ async function getAttendanceById(orgId, id) {
       status: session.status,
     })),
   };
+}
+
+async function getAttendanceDayDetail(orgId, empId, date) {
+  if (!isValidDateOnly(date)) {
+    throw createError('ATT_001', 'Invalid attendance date', 400);
+  }
+
+  const attendance = await Attendance.findOne({
+    where: {
+      org_id: orgId,
+      emp_id: empId,
+      date,
+    },
+  });
+
+  if (!attendance) {
+    throw createError('HTTP_404', 'Attendance record not found', 404);
+  }
+
+  const sessions = await getAttendanceSessions(attendance.id);
+  return serializeAttendanceDetail(attendance, sessions);
+}
+
+async function getAttendanceById(orgId, id) {
+  const attendance = await Attendance.findOne({ where: { id, org_id: orgId } });
+  if (!attendance) {
+    throw createError('HTTP_404', 'Attendance record not found', 404);
+  }
+
+  const sessions = await getAttendanceSessions(attendance.id);
+  return serializeAttendanceDetail(attendance, sessions);
 }
 
 async function manualMark({ orgId, id, body, req }) {
@@ -2563,6 +2609,7 @@ module.exports = {
   listAttendance,
   exportAttendance,
   getAttendanceHistory,
+  getAttendanceDayDetail,
   getAttendanceById,
   manualMark,
   setAnomalyFlag,

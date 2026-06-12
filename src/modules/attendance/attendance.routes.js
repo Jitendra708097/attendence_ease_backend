@@ -18,6 +18,7 @@ router.post('/sync', asyncHandler(attendanceController.sync));
 router.post('/undo-checkout', asyncHandler(attendanceController.undoCheckout));
 router.get('/today', asyncHandler(attendanceController.today));
 router.get('/history', asyncHandler(attendanceController.history));
+router.get('/history/:date', asyncHandler(attendanceController.dayDetail));
 
 router.get('/stats/today', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.statsToday));
 router.get('/stats/trend', roleGuard('admin', 'manager', 'superadmin'), asyncHandler(attendanceController.trend));
