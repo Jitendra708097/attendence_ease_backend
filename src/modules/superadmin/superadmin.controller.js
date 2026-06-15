@@ -1,10 +1,10 @@
 const { ok, fail } = require('../../utils/response');
 const { log } = require('../../utils/auditLog');
 const {
-  clearAuthCookies,
+  clearSuperadminAuthCookies,
   getAccessTokenFromRequest,
   getRefreshTokenFromRequest,
-  setAuthCookies,
+  setSuperadminAuthCookies,
 } = require('../../utils/authCookies');
 const { blacklistToken } = require('../../utils/jwtBlacklist');
 const superadminService = require('./superadmin.service');
@@ -13,7 +13,7 @@ const feedbackService = require('../feedback/feedback.service');
 async function login(req, res) {
   try {
     const data = await superadminService.login(req.body);
-    setAuthCookies(res, data);
+    setSuperadminAuthCookies(res, data);
     return ok(res, data, 'Superadmin login successful');
   } catch (error) {
     try {
@@ -35,7 +35,7 @@ async function login(req, res) {
 async function refresh(req, res) {
   try {
     const data = await superadminService.refresh(getRefreshTokenFromRequest(req));
-    setAuthCookies(res, data);
+    setSuperadminAuthCookies(res, data);
     return ok(res, data, 'Token refreshed');
   } catch (error) {
     return fail(res, error.code || 'AUTH_002', error.message, error.details || [], error.statusCode || 400);
@@ -49,7 +49,7 @@ async function logout(req, res) {
       refreshToken: getRefreshTokenFromRequest(req),
     });
     await blacklistToken(getAccessTokenFromRequest(req));
-    clearAuthCookies(res);
+    clearSuperadminAuthCookies(res);
     return ok(res, data, 'Logged out');
   } catch (error) {
     return fail(res, error.code || 'AUTH_006', error.message, error.details || [], error.statusCode || 400);

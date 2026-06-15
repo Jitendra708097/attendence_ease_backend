@@ -1,7 +1,22 @@
 const env = require('../config/env');
 
-const ACCESS_COOKIE = 'ae_access_token';
-const REFRESH_COOKIE = 'ae_refresh_token';
+const COOKIE_SCOPES = {
+  admin: {
+    access: 'ae_admin_access_token',
+    refresh: 'ae_admin_refresh_token',
+  },
+  superadmin: {
+    access: 'ae_sa_access_token',
+    refresh: 'ae_sa_refresh_token',
+  },
+  legacy: {
+    access: 'ae_access_token',
+    refresh: 'ae_refresh_token',
+  },
+};
+
+const ACCESS_COOKIE = COOKIE_SCOPES.admin.access;
+const REFRESH_COOKIE = COOKIE_SCOPES.admin.refresh;
 
 function durationToMs(value, fallbackMs) {
   if (!value) return fallbackMs;
@@ -32,10 +47,27 @@ function cookieOptions(maxAge) {
   };
 }
 
-function setAuthCookies(res, { accessToken, refreshToken }) {
+function resolveCookieScope(scope) {
+  return COOKIE_SCOPES[scope] || COOKIE_SCOPES.admin;
+}
+
+function getRequestScope(req) {
+  const path = req.originalUrl || req.url || '';
+  return path.startsWith('/api/v1/superadmin') || path.startsWith('/superadmin') ? 'superadmin' : 'admin';
+}
+
+function clearCookiePair(res, scope) {
+  const cookies = resolveCookieScope(scope);
+  res.clearCookie(cookies.access, cookieOptions(0));
+  res.clearCookie(cookies.refresh, cookieOptions(0));
+}
+
+function setScopedAuthCookies(res, { accessToken, refreshToken }, scope = 'admin') {
+  const cookies = resolveCookieScope(scope);
+
   if (accessToken) {
     res.cookie(
-      ACCESS_COOKIE,
+      cookies.access,
       accessToken,
       cookieOptions(durationToMs(env.jwt.accessExpiry, 15 * 60 * 1000))
     );
@@ -43,37 +75,70 @@ function setAuthCookies(res, { accessToken, refreshToken }) {
 
   if (refreshToken) {
     res.cookie(
-      REFRESH_COOKIE,
+      cookies.refresh,
       refreshToken,
       cookieOptions(durationToMs(env.jwt.refreshExpiry, 30 * 24 * 60 * 60 * 1000))
     );
   }
+
+  clearCookiePair(res, 'legacy');
+}
+
+function setAuthCookies(res, tokens) {
+  setScopedAuthCookies(res, tokens, 'admin');
+}
+
+function setAdminAuthCookies(res, tokens) {
+  setScopedAuthCookies(res, tokens, 'admin');
+}
+
+function setSuperadminAuthCookies(res, tokens) {
+  setScopedAuthCookies(res, tokens, 'superadmin');
+}
+
+function clearScopedAuthCookies(res, scope = 'admin') {
+  clearCookiePair(res, scope);
+  clearCookiePair(res, 'legacy');
 }
 
 function clearAuthCookies(res) {
-  res.clearCookie(ACCESS_COOKIE, cookieOptions(0));
-  res.clearCookie(REFRESH_COOKIE, cookieOptions(0));
+  clearScopedAuthCookies(res, 'admin');
 }
 
-function getAccessTokenFromRequest(req) {
+function clearAdminAuthCookies(res) {
+  clearScopedAuthCookies(res, 'admin');
+}
+
+function clearSuperadminAuthCookies(res) {
+  clearScopedAuthCookies(res, 'superadmin');
+}
+
+function getAccessTokenFromRequest(req, scope = getRequestScope(req)) {
   const authorization = req.headers.authorization || '';
 
   if (authorization.startsWith('Bearer ')) {
     return authorization.replace('Bearer ', '').trim();
   }
 
-  return req.cookies?.[ACCESS_COOKIE] || null;
+  const cookies = resolveCookieScope(scope);
+  return req.cookies?.[cookies.access] || null;
 }
 
-function getRefreshTokenFromRequest(req) {
-  return req.body?.refreshToken || req.cookies?.[REFRESH_COOKIE] || null;
+function getRefreshTokenFromRequest(req, scope = getRequestScope(req)) {
+  const cookies = resolveCookieScope(scope);
+  return req.body?.refreshToken || req.cookies?.[cookies.refresh] || null;
 }
 
 module.exports = {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
+  COOKIE_SCOPES,
   setAuthCookies,
+  setAdminAuthCookies,
+  setSuperadminAuthCookies,
   clearAuthCookies,
+  clearAdminAuthCookies,
+  clearSuperadminAuthCookies,
   getAccessTokenFromRequest,
   getRefreshTokenFromRequest,
 };
